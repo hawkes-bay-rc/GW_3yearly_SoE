@@ -1,0 +1,1097 @@
+---
+title: "Groundwater level state report"
+output:
+  html_notebook:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    number_sections: false
+    theme: lumen
+    fig.cap: TRUE
+    df_print: paged
+---
+
+```{=html}
+<style>
+/* Adjust settings for the Table of Contents (TOC) */
+#TOC {
+    margin: 80px 0 20px -180px; /* Slightly reduced margin for better positioning */
+}
+div.tocify {
+    width: 100%; /* Ensures it adapts well to different screen sizes */
+    max-width: 500px;
+    max-height: 100vh; /* Ensures TOC never exceeds the viewport height */
+    overflow-y: auto; /* Adds scroll if content exceeds max-height */
+}
+
+/* Style for the title */
+h1.title {
+    color: #66b2b2;
+    font-weight: bold;
+    font-size: 42px;
+    text-align: center; /* Centers the title */
+    margin-bottom: 20px; /* Adds spacing below the title */
+}
+
+/* Body styles */
+body {
+    text-align: justify;
+    font-size: 16pt;
+    line-height: 1.6; /* Improves readability with better line spacing */
+}
+
+/* Main container styles */
+div.main-container {
+    max-width: 1280px; /* Reduced slightly for better content width balance */
+    margin: 0 auto; /* Centers the container */
+    padding: 20px; /* Adds internal spacing */
+    box-sizing: border-box; /* Ensures padding doesn’t affect max-width */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #TOC {
+        margin: 50px 0 10px -100px; /* Adjusts TOC margin for smaller screens */
+    }
+    div.tocify {
+        width: 100%;
+        max-width: 100%;
+    }
+    h1.title {
+        font-size: 36px; /* Reduces title size for smaller screens */
+    }
+    body {
+        font-size: 14pt; /* Slightly reduces text size for better mobile viewing */
+    }
+    div.main-container {
+        max-width: 95%; /* Allows more flexibility on smaller screens */
+        padding: 10px;
+    }
+}
+</style>
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+library(dplyr)
+library(RODBC)
+library(sf)
+library(ggplot2)
+library(forcats)
+library(tidyr)
+library(lubridate)
+```
+
+| 
+| 
+
+# Load data
+
+## Load data file
+
+This section loads the **main groundwater monitoring dataset** from a structured RData file. The script ensures proper **data formatting** and **metadata assignment** before further analysis.
+
+**Key Dataframes:**
+
+-   **`data_set_clean`**: The primary dataset containing **groundwater level observations**.
+
+-   **`files`**: A list of available groundwater datasets, filtered based on file naming conventions.
+
+```{r , include=FALSE, cache=FALSE}
+# Set the target directory
+
+# Set the directory where the file is saved
+# As of 16/09/2024 this works
+target_dir <- file.path(rprojroot::find_rstudio_root_file(), "2_Data_error_checking_and_cleaning")
+
+state_dir <- file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis")
+
+# Define the pattern to match the files with the desired prefix
+pattern <- "^\\d{4}-\\d{2}-\\d{2}_data_set_clean\\.RData$"
+
+# List files in the directory that match the pattern
+files <- list.files(path = target_dir, pattern = pattern, full.names = TRUE)
+
+# Check if there are matching files
+if (length(files) > 0) {
+  # Load the most recent file (if there are multiple, pick the first one)
+  load(files[1])
+  message("Loaded file: ", files[1])
+} else {
+  stop("No matching files found.")
+}
+
+```
+
+## Load GIS data
+
+This section retrieves and processes **geospatial data** related to groundwater monitoring wells. It reads **shapefiles** and transforms coordinate reference systems (CRS) for compatibility.
+
+**Key Dataframes:**
+
+-   **`allbasins`**: Shapefile of all groundwater basins.
+
+-   **`Regional_boundary_sf`**: Defines regional boundaries.
+
+-   **`Quaternary_aquifers`** and **`Pre_quaternary_aquifers`**: Define aquifer extents.
+
+-   **`SoE_FMUs`**: State of Environment (SoE) Functional Management Units.
+
+-   **`EMA_sf`**: Defines **Environmental Management Areas (EMAs)**.
+
+```{r get_GIS_data}
+
+# Define whether to update data. Set to TRUE if you want to force retrieval from the database.
+update_wellstor_data <- FALSE
+
+# Define the GIS layers directory
+gis_dir <- file.path(rprojroot::find_rstudio_root_file(), "GIS_layers")
+
+# Find any existing WellStor shapefiles with a date stamp (pattern: "WellStor_YYYYMMDD.shp")
+shp_files <- list.files(gis_dir, pattern = "^WellStor_\\d{8}\\.shp$", full.names = TRUE)
+
+if (!update_wellstor_data && length(shp_files) > 0) {
+  # If not updating and there are existing shapefiles, pick the most recent one
+  file_dates <- sapply(shp_files, function(f) {
+    base <- basename(f)
+    date_str <- sub("^WellStor_(\\d{8})\\.shp$", "\\1", base)
+    as.Date(date_str, format = "%Y%m%d")
+  })
+  most_recent_file <- shp_files[which.max(file_dates)]
+  # The shapefile is assumed to be in NZTM
+  WellStor_sf_NZTM <- st_read(most_recent_file)
+  message("Loaded WellStor from shapefile: ", most_recent_file)
+} else {
+  # Either update_wellstor_data is TRUE or no file exists, so retrieve new data
+  Con <- RODBC::odbcConnect("HBRCData64", uid = "", pwd = "")
+  on.exit(RODBC::odbcClose(Con))
+  
+  WellStor <- RODBC::sqlQuery(Con, "
+    SELECT WELLBore.BoreNo AS well, 
+           WELLBore.Easting AS x, 
+           WELLBore.Northing AS y, 
+           WELLBore.SOE_WL, 
+           WELLBore.SOE_WQ
+    FROM HbrcDB.dbo.WELLBore WELLBore", 
+    stringsAsFactors = FALSE) %>%
+    mutate(well = as.factor(well))
+  
+  # Convert the data frame to an sf object using NZMG coordinates (EPSG:27200)
+  WellStor_sf_NZMG <- st_as_sf(WellStor, coords = c("x", "y"), crs = 27200)
+  
+  # Transform the data to NZTM (EPSG:2193)
+  WellStor_sf_NZTM <- st_transform(WellStor_sf_NZMG, crs = 2193)
+  
+  # Create a date stamp for today's date and define the shapefile path
+  date_stamp <- format(Sys.Date(), "%Y%m%d")
+  wellstor_shp_path <- file.path(gis_dir, paste0("WellStor_", date_stamp, ".shp"))
+  
+  # Save the NZTM sf object as a shapefile with the date stamp in the file name
+  st_write(WellStor_sf_NZTM, wellstor_shp_path)
+  message("WellStor shapefile created and saved: ", wellstor_shp_path)
+}
+
+# Ensure that WellStor_sf_NZMG is available by generating it from the NZTM data if needed
+if (!exists("WellStor_sf_NZMG")) {
+  WellStor_sf_NZMG <- st_transform(WellStor_sf_NZTM, crs = 27200)
+  message("Generated WellStor_sf_NZMG from NZTM data")
+}
+
+# Ensure that the WellStor attribute dataframe is available
+if (!exists("WellStor")) {
+  WellStor <- st_drop_geometry(WellStor_sf_NZTM)
+  message("Generated WellStor dataframe from NZTM data")
+}
+
+# Continue with the rest of your GIS layers and processing...
+allbasins <- st_read(file.path(gis_dir, "All_basins7.shp"), crs = 2193) %>% 
+  dplyr::select(NAME)
+
+Regional_boundary_sf <- st_read(file.path(gis_dir, "Regional_boundary.shp"))
+st_crs(Regional_boundary_sf) <- 2193  # for NZTM
+Regional_boundary_sf <- st_transform(Regional_boundary_sf, 2193) %>% 
+  st_cast("MULTILINESTRING")
+
+Quaternary_aquifers <- st_read(file.path(gis_dir, "Quaternary_deposits.shp"), crs = 2193)
+Pre_qauaternary_aquifers <- st_read(file.path(gis_dir, "Hard_rock_aquifers.shp"), crs = 2193)
+
+bb_box <- st_read(file.path(gis_dir, "bb_box.shp"), crs = 2193) %>% 
+  st_cast("MULTILINESTRING")
+
+SoE_FMUs <- st_read(file.path(gis_dir, "SoE_Areas.shp"), crs = 2193) %>% 
+  dplyr::select(FMU)
+
+HP_plains_sf <- st_read(file.path(gis_dir, "HP_boundary.shp"))
+st_crs(HP_plains_sf) <- 2193  # EPSG for NZTM 2000
+
+RP_plains_sf <- st_read(file.path(gis_dir, "RuaPlains_boundary.shp"))
+st_crs(RP_plains_sf) <- 2193  # EPSG for NZTM 2000
+
+EMA_sf <- st_read(file.path(gis_dir, "EMA.shp"))
+
+```
+
+## Load functions
+
+-   The function **`watyr`** assigns each date to the **New Zealand hydrological year**, which runs from **July 1st to June 30th**. This allows for consistent year-to-year comparisons of hydrological conditions.
+
+-   The function **`seayr`** follows a similar structure but shifts the start of the year **one month earlier**, running from **June 1st to May 31st**. This adjustment ensures that full seasons remain within the same seasonal year for more accurate seasonal analysis.
+
+```{r , include=FALSE, cache=FALSE}
+
+#create a function for defining the water year
+wtr_yr <- function(dates, start_month=7) {
+  # Convert dates into POSIXlt
+  dates.posix = as.POSIXlt(dates)
+  # Year offset
+  offset = ifelse(dates.posix$mon >= start_month - 1, 1, 0)
+  # Water year
+  adj.year = dates.posix$year + 1899 + offset
+  # Return the water year
+  adj.year
+}
+
+
+sea_yr <- function(dates, start_month=6) {
+  # Convert dates into POSIXlt
+  dates.posix = as.POSIXlt(dates)
+  # Year offset
+  offset = ifelse(dates.posix$mon >= start_month - 1, 1, 0)
+  # Water year
+  adj.year = dates.posix$year + 1899 + offset
+  # Return the water year
+  adj.year
+}
+```
+
+# Prepare data sets
+
+Here, groundwater data is processed for **monthly, seasonal, and percentile-based** analyses. Various transformations and filtering steps are applied to create datasets that enable deeper trend insights.
+
+**Key Dataframes:**
+
+-   **`data_monthly_con`**: Monthly conditions for each well.
+
+-   **`data_seasonal_con`**: Seasonal conditions categorized by hydrological year.
+
+-   **`data_percentile_con`**: Groundwater level percentile classifications.
+
+## Prepare data sets for monthly analysis
+
+-   This section calculates **monthly groundwater statistics** such as:
+
+    -   **Monitoring duration** (`mon_dur`).
+
+    -   **Water year (`watyr`) and seasonal year (`seayr`)** assignments.
+
+    -   Classification into **"Highest-ever", "Lowest-ever", "Normal", "Above-normal", "Below-normal"** categories.
+
+    **Key Dataframes:**
+
+    -   **`data_monthly_con`**: Derived from `data_set_clean`, grouped by **well** and **month**.
+
+```{r , include=FALSE, cache=FALSE}
+
+######################### Monthly groundwater level conditions #############################
+data_monthly_con <- data_set_clean %>% 
+  dplyr::group_by(well) %>% 
+  dplyr::mutate(
+    max_date = max(my_month, na.rm = TRUE),
+    min_date = min(my_month, na.rm = TRUE),
+    cur_date = Sys.Date(),
+    mon_dur = round(difftime(max_date, min_date, units = "weeks") / 52.25),
+    watyr = wtr_yr(my_month),
+    seayr = sea_yr(my_month),
+    ) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::group_by(well, month) %>% 
+  dplyr::mutate(
+    count = dplyr::n(),
+    rank = rank(av_gl, na.last = TRUE),
+    con = dplyr::case_when(
+      av_gl == max(av_gl, na.rm = TRUE) ~ "Highest-ever",
+      av_gl == min(av_gl, na.rm = TRUE) ~ "Lowest-ever",
+      av_gl > quantile(av_gl, 0.25, na.rm = TRUE, type = 5) & 
+      av_gl < quantile(av_gl, 0.75, na.rm = TRUE, type = 5) ~ "Normal",
+      av_gl >= quantile(av_gl, 0.75, na.rm = TRUE, type = 5) & 
+      av_gl < max(av_gl, na.rm = TRUE) ~ "Above-normal",
+      av_gl <= quantile(av_gl, 0.25, na.rm = TRUE) & 
+      av_gl > min(av_gl, na.rm = TRUE) ~ "Below-normal",
+      TRUE ~ "NA"
+    ),
+    month = factor(month, levels = c("July", "August", "September", "October", 
+                                     "November", "December", "January", "February", 
+                                     "March", "April", "May", "June"))
+  ) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::filter(count > 9)  # Must have 10 years or more of data
+
+```
+
+## Prepare data sets for seasonal analysis
+
+-   **`data_season_con`** calculates **seasonal groundwater statistics** by grouping groundwater levels (**GLs**) for each site based on **season** (**Winter, Spring, Summer, Autumn**) and computing the seasonal average.
+
+-   These seasonal averages are then compared to historical seasonal averages and classified into categories such as **Normal, Above-Normal, Below-Normal, Highest-Ever, and Lowest-Ever**.
+
+-   **Key Dataframes:**
+
+    -   **`data_seasonal_con`**: Contains groundwater level summaries per **season**.
+
+```{r, include=FALSE, cache=FALSE}
+
+############################### Seasonal groundwater level conditions ######################
+data_season_con <- data_set_clean %>% 
+  dplyr::group_by(well) %>% 
+  dplyr::mutate(
+    watyr = wtr_yr(my_month),
+    seayr = sea_yr(my_month),
+     ) %>% 
+  na.omit() %>% 
+  dplyr::group_by(well, seayr) %>% 
+  dplyr::filter(dplyr::n_distinct(month) == 12) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::mutate(
+    season = forcats::fct_collapse(
+      month,
+      Spring = c("September", "October", "November"),
+      Summer = c("December", "January", "February"),
+      Autumn = c("March", "April", "May"),
+      Winter = c("June", "July", "August")
+    ),
+    season = forcats::fct_relevel(season, "Winter", "Spring", "Summer", "Autumn")
+  ) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::group_by(well, season, seayr) %>% 
+  dplyr::mutate(sea_gl = mean(av_gl, na.rm = TRUE)) %>% 
+  dplyr::distinct(well, season, watyr, sea_gl, .keep_all = TRUE) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::group_by(well, season) %>% 
+  dplyr::mutate(
+    count = dplyr::n(),
+    con = dplyr::case_when(
+      sea_gl == max(sea_gl, na.rm = TRUE) ~ "Highest-ever",
+      sea_gl == min(sea_gl, na.rm = TRUE) ~ "Lowest-ever",
+      sea_gl > quantile(sea_gl, 0.25, na.rm = TRUE) & 
+      sea_gl < quantile(sea_gl, 0.75, na.rm = TRUE) ~ "Normal",
+      sea_gl >= quantile(sea_gl, 0.75, na.rm = TRUE) & 
+      sea_gl < max(sea_gl, na.rm = TRUE) ~ "Above-normal",
+      sea_gl <= quantile(sea_gl, 0.25, na.rm = TRUE) & 
+      sea_gl > min(sea_gl, na.rm = TRUE) ~ "Below-normal",
+      TRUE ~ NA_character_
+    )
+  ) %>% 
+  dplyr::ungroup() %>% 
+  dplyr::select(well, sea_gl, seayr, season, con) %>% 
+  dplyr::distinct() %>% 
+  dplyr::group_by(well) %>% 
+  dplyr::mutate(season_count = dplyr::n()) %>% 
+  dplyr::filter(season_count > 39) %>%  # Must have more than 10 years of seasonal data (4 seasons per year * 10 years)
+  dplyr::ungroup()
+
+#duplicates <- data_season_con[duplicated(data_season_con), ]
+
+```
+
+## Prepare data sets for percentile analysis 1
+
+-   Uses data_set_clean
+
+-   This R code **prepares a dataset (`state`) for analysis** by cleaning and structuring `data_set_clean`,
+
+-   Creates the following dataframes:
+
+    -   state - creates labels for subsequent analysis and restructures some columns
+
+    -   All_GL - uses the state df. Creates a df with 80% data coverage over the monitoring period and minimum of 5 years (5 data points)
+
+    -   WellStor_SF - coverts the WellStor dataframe into an sf object for spatial analysis
+
+    -   WellStor_basins - intersects wellStor and the allbasins shapefile
+
+    -   WellStor_EMA - intersects wellStor and the EMA shapefile
+
+    -   GL_per - merges groundwater level (All_GL) data with WellStor_basins
+
+    -   GL_per_EMA - merges groundwater level (All_GL) data with WellStor_EMA
+
+    -   GL_per_1_EMA - merges groundwater level (data_monthly_con) with WellStor EMA (I need to check what the difference between (All_GL and data_monthly_con is)
+
+    -   GL_per_combined - takes the df GL_per and adds the hydro cateogory "Full record"
+
+```{r , include=FALSE, cache=FALSE}
+
+#Prepare data set for analysis
+state <- data_set_clean %>% 
+  dplyr::mutate(
+    label = paste(well, month, year),
+    label1 = paste(well, month),
+    month = factor(month, levels = c("January", "February", "March", "April", "May", "June", 
+                                     "July", "August", "September", "October", "November", "December")),
+    value = GL,  
+    year = as.integer(year)) %>% 
+  dplyr::distinct() %>%  # Remove exact duplicates
+  na.omit()  # Remove rows with NA values
+
+state$label[duplicated(state$label)] #check for duplicate measurements
+
+#Create a dataset with 80% data coverage over the monitoring period and minimum of 5 years (5 data points)
+All_GL <- state %>%
+  group_by(well) %>%
+  mutate(
+    end_date = max(datetime), 
+    start_date = min(datetime)    ,
+    actual_monitoring = round((n() - 1) / 12, 2),
+    years_monitored = round(as.numeric((end_date - start_date) / 365.25), 1),
+    coverage = actual_monitoring / years_monitored,
+    year = as.numeric(year)
+  ) %>%
+  filter(coverage >= 0.8, years_monitored >= 5) %>%
+  mutate(period = "Full") 
+
+#################################
+
+# Convert well locations to spatial data and transform to NZTM
+# WellStor_SF <- WellStor_sf %>% 
+  # dplyr::select(well)
+
+# Perform spatial intersections
+WellStor_basins <- WellStor_sf_NZTM %>% 
+  sf::st_intersection(x=allbasins) %>% 
+  sf::st_drop_geometry() %>% 
+  select(well,NAME)
+
+WellStor_EMA <- WellStor_sf_NZTM %>% 
+  sf::st_intersection(x=EMA_sf) %>% 
+  sf::st_drop_geometry() %>% 
+  select(well, EMA)
+
+# Merge groundwater level (All_GL) data with basin and EMA information
+GL_per <- All_GL %>% 
+  select(well, datetime, GL) %>% 
+  left_join(WellStor_basins, by = "well") %>% 
+  mutate(datetime = as.Date(datetime),
+         hydro_year = ifelse(format(datetime, "%m") >= 7, 
+                             as.numeric(format(datetime, "%Y")), 
+                             as.numeric(format(datetime, "%Y")) - 1) %>% as.character()) %>% 
+  group_by(well) %>%
+  mutate(percentile = percent_rank(GL) * 100) %>%
+  ungroup()
+
+# Merge groundwater level (All_GL) data with EMA information
+
+GL_per_EMA <- All_GL %>% 
+  select(well, datetime, GL) %>% 
+  left_join(WellStor_EMA, by = "well")
+
+GL_per_1_EMA <- data_monthly_con %>% 
+  select(well, datetime, GL, watyr) %>% 
+  left_join(WellStor_EMA, by = "well")
+
+#########################################################
+
+GL_per_combined <- GL_per %>%
+  filter(hydro_year >= "2004") %>%
+  bind_rows(mutate(., hydro_year = "Full Record")) %>%
+  mutate(hydro_year = factor(hydro_year, levels = c(sort(unique(as.numeric(hydro_year))), "Full Record")))
+
+# Identify the last three hydrological years dynamically
+highlight_years <- c(as.character(tail(sort(unique(as.numeric(GL_per_combined$hydro_year))), 3)), "Full Record")
+#last_years <- sort(unique(as.numeric(GL_per_filtered$hydro_year)), decreasing = TRUE)[1:3]
+
+
+```
+
+# Analysis
+
+## Seasonal groundwater conditions by aquifer
+
+-   **Uses the `data_season_con` dataframe**
+
+-   This analysis evaluates **seasonal groundwater level conditions** across **Hawke's Bay from 2019 to 2024**. It does so by **counting how often wells in each aquifer** experienced specific groundwater conditions (e.g., Normal, Above-Normal, Below-Normal) and then **calculates the percentage of occurrences** for each category.
+
+```{r , include=FALSE, cache=FALSE}
+
+################## by Seasonal Year ######################################
+
+# Group seasonal conditions by season/watyr and graph for each water year for each Aquifer area
+data_season_2019_2023_by_aquifer <- data_season_con %>%
+  mutate(con = fct_relevel(con, "Highest-ever", "Above-normal", "Normal", "Below-normal", "Lowest-ever")) %>%
+  ungroup() %>%
+  filter(seayr %in% c(2019, 2020, 2021, 2022, 2023)) %>%
+  left_join(WellStor_sf_NZTM, by = "well") %>%
+  st_as_sf(crs = 2193) %>%  # Ensure the joined data is an sf object with NZTM CRS
+  st_intersection(allbasins) %>%
+  st_drop_geometry() %>%
+  select(well, season, con, NAME, seayr) %>%
+  group_by(season, NAME, seayr, con) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(per = round(100 * n / sum(n))) %>%
+  na.omit()
+
+```
+
+# Plotting
+
+## Percentile box plot
+
+Box plots visualize groundwater level **distributions across multiple hydrological years**. Shading represents **percentile ranges**, helping detect extreme variations.
+
+**Key Dataframes:**
+
+-   **`boxplot_data`**: Contains percentile-based groundwater statistics.
+
+```{r , include=FALSE, cache=FALSE}
+# Create a numeric version of the hydrological year positions (1, 2, 3, ...)
+# This numeric value will be used for the x-axis so that the shading can work properly.
+GL_per_combined$hydro_year_num <- as.numeric(GL_per_combined$hydro_year)
+
+# Create shading data frame using the numeric positions
+shading_df_1 <- data.frame(
+  hydro_year_label = levels(GL_per_combined$hydro_year),
+  x = 1:length(levels(GL_per_combined$hydro_year))
+)
+shading_df_1$shade <- rep(c(TRUE, FALSE), length.out = nrow(shading_df_1))
+shading_df_1 <- shading_df_1[shading_df_1$shade, ]
+shading_df_1$xmin <- shading_df_1$x - 0.5
+shading_df_1$xmax <- shading_df_1$x + 0.5
+
+# Now plot using the numeric x position but re-label the x-axis accordingly.
+Boxplot <- ggplot(GL_per_combined, aes(x = hydro_year_num, y = percentile, fill = NAME)) +
+  # Update the shading rectangle to extend only from y = 0 to 100 (or use -Inf if you prefer)
+  geom_rect(data = shading_df_1,
+            aes(xmin = xmin, xmax = xmax),
+            ymin = 0, ymax = 100,   # Changed ymax to 100 (and optionally ymin to 0)
+            fill = "grey70", alpha = 0.5, inherit.aes = FALSE) +
+  # Add boxplots with explicit grouping for each hydrological year and NAME
+  geom_boxplot(aes(group = interaction(hydro_year, NAME)),
+               color = "black", outlier.shape = NA) +
+  scale_fill_brewer(palette = "Paired") +
+  labs(x = "Hydrological Year", y = "Groundwater Level Percentile (%)") +
+  scale_x_continuous(breaks = 1:length(levels(GL_per_combined$hydro_year)),
+                     labels = levels(GL_per_combined$hydro_year)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "bottom") +
+  guides(fill = guide_legend(title = NULL))
+
+
+#creates a Map folder
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Box_plots"), recursive = TRUE, showWarnings = FALSE)
+
+# Save the plot inside "Box_plots"
+ggsave(
+  filename = file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Box_plots", "Percentile_boxplot.png"),
+  plot = Boxplot,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+## Envelope plots - option 1
+
+Envelope plots illustrate **groundwater variability over time** by displaying **percentile-based bands**.
+
+**Key Dataframes:**
+
+-   **`envelope_plot_data`**: Summarizes **groundwater levels for ribbon plot visualizations**.
+
+```{r, include=FALSE, cache=FALSE}
+
+#################### option 2 ##########################################
+
+# Convert hydro_year to numeric before summarisation
+GL_per_combined_1 <- GL_per_combined %>%
+  mutate(hydro_year = as.numeric(as.character(hydro_year)))
+
+# Summarise data to get percentiles for ribbon plot
+summary_data <- GL_per_combined_1 %>%
+  filter(NAME == "Heretaunga Plains") %>%
+  group_by(hydro_year) %>%
+  summarise(
+    p10 = quantile(percentile, 0.10, na.rm = TRUE),
+    p25 = quantile(percentile, 0.25, na.rm = TRUE),
+    p50 = quantile(percentile, 0.50, na.rm = TRUE),  # Median
+    p75 = quantile(percentile, 0.75, na.rm = TRUE),
+    p90 = quantile(percentile, 0.90, na.rm = TRUE)
+  )
+
+# Option 2 - Create the ribbon plot
+Envelope <- ggplot(summary_data, aes(x = hydro_year + 1)) +  # Shift x-axis forward by 1 year
+  geom_ribbon(aes(ymin = p25, ymax = p75, fill = "25th-75th Percentile"), alpha = 0.5) +  
+  geom_ribbon(aes(ymin = p10, ymax = p90, fill = "10th-90th Percentile"), alpha = 0.3) +  
+  geom_line(aes(y = p50, colour = "Median"), linewidth = 1.2) +  
+  scale_fill_manual(values = c("25th-75th Percentile" = "#66c2a5", "10th-90th Percentile" = "#8da0cb")) +
+  scale_colour_manual(values = c("Median" = "black")) +
+  labs(
+    x = "Hydrological Year", 
+    y = "Groundwater Level Percentile (%)",
+    fill = "Percentile Ranges",
+    colour = NULL
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(
+    breaks = summary_data$hydro_year + 1,  # Adjust breaks for new x-axis
+    labels = function(x) paste0(x - 1, "-", x)  # Correct "YYYY-YYYY" formatting
+  )
+
+#creates a Map folder
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Envelope_plot1"), recursive = TRUE, showWarnings = FALSE)
+
+
+# Save the plot inside "Envelope_plot1"
+ggsave(
+  filename = file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Envelope_plot1", "Percentile_envelope.png"),
+  plot = Envelope,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+
+```
+
+## Envelope plots - options 2
+
+-   Uses data_set_clean
+
+-   This R script **generates and saves groundwater level plots** for **each well** in the dataset. It stores them in a new folder called Envelope_plots
+
+-   The full time series is plotted but the Envelope_data df could be filtered to look at the last X years if desired
+
+```{r , include=FALSE, cache=FALSE}
+
+#Obtain data for plotting
+Envelope_data <- data_set_clean %>% 
+  group_by(well, month) %>% 
+  mutate(minGL= min(GL, na.rm = TRUE),
+         maxGL = max(GL, na.rm = TRUE),
+         Q20 = quantile(GL,0.2, na.rm=TRUE),
+         Q80 = quantile(GL,0.8, na.rm=TRUE))
+
+######
+df <- Envelope_data 
+
+plot_per_well <- function(well_ids) {
+  
+  df_well <- df %>% 
+    dplyr::filter(well == well_ids) # Filter for the current well
+
+  g <- ggplot(df_well, aes(x = my_month, y = GL)) +
+    geom_ribbon(aes(ymin = minGL, ymax = maxGL, fill = "Above/Below\nnormal range"), alpha = 0.5) +
+    geom_ribbon(aes(ymin = Q20, ymax = Q80, fill = "Normal range\n(20-80th percentile)"), alpha = 1) +
+    scale_fill_manual(values = c("dodgerblue4", "lightskyblue")) +
+    geom_line(aes(x = my_month, y = GL, lty = "Groundwater\nLevel"), color = "black", size = 0.5) +
+    scale_linetype_manual(values = c("dashed")) +
+    labs(x = "Year", 
+         y = "Groundwater levels (m)", 
+         fill = " ") +
+    theme(legend.position = "bottom",
+          legend.direction = "horizontal",
+          legend.title = element_blank()) +
+    facet_wrap(~well, scales = "free") 
+    #ggtitle(well_ids)  # Uncomment if you want a title per plot
+
+  # Set the target directory for plots
+  plots_dir <- file.path(rprojroot::find_rstudio_root_file(), 
+                         "3_State_analysis", 
+                         "Envelope_plots2")
+
+  # Check if the directory exists; if not, create it
+  if (!dir.exists(plots_dir)) {
+    dir.create(plots_dir, recursive = TRUE)  
+  }
+  
+  # Save the plot
+  cowplot::save_plot(file.path(plots_dir, paste0(well_ids, ".png")), g)
+
+  # Print progress message
+  print(paste0("Generating plot for well ", well_ids))
+  
+  return(g)  # Return the plot (optional)
+}
+
+# Get unique well IDs
+well_ids <- unique(df$well)
+no_well <- length(well_ids)
+
+# Loop through wells and generate plots
+for(www in 1:no_well) {  
+  plot_per_well(well_ids[www])
+}
+
+###############################################################################
+
+```
+
+## Seasonal groundwater conditions by aquifer
+
+-   In this option to seasonal groundwater level conditions between 2019-2024 are summarised and percentage bar plots. This graph hasn't been used in the 2024 SoE reporting cycle but provide an alternative option
+
+```{r , include=FALSE, cache=FALSE}
+#################################################################
+
+# Group monthly conditions by season and graph for each watyr year for each aquifer
+Summary_plot <- ggplot(data_season_2019_2023_by_aquifer, aes(fill=con, y=per, x=season)) +
+    geom_bar(position="fill", stat="identity")+
+    scale_fill_manual(values = c("Above-normal"='cyan',
+                               "Below-normal"='yellow',
+                               "Highest-ever"='blue',
+                               "Lowest-ever"='red',
+                               "Normal"='green'))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.15))+
+  ylab("Percentage")+
+  ggtitle("Monthly Groundwater level conditions grouped by Season and Year")+
+  facet_grid(seayr~NAME,scales ="free_x")
+
+
+#creates a Map folder
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Summary_plots"), recursive = TRUE, showWarnings = FALSE)
+
+#Saves the pie chart plot to the created folder as a PNG file
+ggsave(filename = file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Summary_plots", "Summary_plot.png"),
+       plot = Summary_plot,
+       width = 10, height = 8, dpi = 300)
+
+```
+
+## Facet maps
+
+-   In this code chunk we create facet maps for the Heretaunga and Ruataniwha Plains based on seasonal groundwater level conditions between 2021-2024
+
+```{r , include=FALSE, cache=FALSE}
+#By season - note the seasons are different to the watyr by 1 month
+
+map_sf_2021_2023_sea <- data_season_con %>%
+  ungroup() %>%
+  dplyr::filter(seayr %in% c(2021, 2022, 2023)) %>%
+  na.omit() %>%
+  mutate(con = fct_relevel(con, "Highest-ever", "Above-normal", "Normal", "Below-normal", "Lowest-ever")) %>%
+  left_join(WellStor_sf_NZTM, by = "well") %>%
+  st_as_sf(crs = 2193) %>%  # Ensure the result is an sf object with NZTM CRS
+  st_intersection(allbasins) %>%
+  dplyr::select(NAME, well, season, seayr, sea_gl, con) %>%
+  dplyr::mutate(year_year = paste(seayr, sep = " / ")) %>%
+  dplyr::filter(NAME %in% c("Heretaunga Plains", "Ruataniwha Plains"))
+# 
+#Map
+tmap::tmap_mode("plot")
+
+#Here we define the background map for Hawke's Bay
+Map_2021_2023_sea_facet_Rua <- tmap::tm_shape(RP_plains_sf)+
+  tmap::tm_fill()+
+  tmap::tm_shape(map_sf_2021_2023_sea)+
+    tmap::tm_dots(col = "con",
+                  palette=c("Above-normal"='deepskyblue',
+                            "Below-normal"='yellow',
+                            "Highest-ever"='blue',
+                            "Lowest-ever"='red',
+                            "Normal"='chartreuse4'),
+                  #title=unique(allData_sf2$month),
+                  title= " ",
+                  stretch.palette = FALSE,
+                  size = 1,
+                  shape =21,
+                  clustering = FALSE,
+                  legend.show = T,
+                  legend.is.portrait = F)+
+    tmap::tm_facets(c("year_year","season"),free.coords = FALSE)+
+    tmap::tm_layout(legend.outside = T,
+                    legend.outside.position = "bottom",
+                    legend.position = c(0.1,0.4),
+                    legend.outside.size = 0.15,
+                    legend.text.size = 2)
+
+ 
+#creates a Map folder
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Maps"), recursive = TRUE, showWarnings = FALSE)
+
+#saves file
+tmap::tmap_save(Map_2021_2023_sea_facet_Rua, 
+  file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Maps", "Map_2021_2023_sea_facet_Rua.png")
+)
+
+# HERETAUNGA PLAINS
+
+Map_2021_2023_sea_facet_Here <- tmap::tm_shape(HP_plains_sf)+
+    tmap::tm_fill()+
+    tmap::tm_shape(map_sf_2021_2023_sea)+
+    tmap::tm_dots(col = "con",
+                  palette=c("Above-normal"='deepskyblue',
+                            "Below-normal"='yellow',
+                            "Highest-ever"='blue',
+                            "Lowest-ever"='red',
+                            "Normal"='chartreuse4'),
+                  #title=unique(allData_sf2$month),
+                  title= " ",
+                  stretch.palette = FALSE,
+                  size = 1,
+                  shape =21,
+                  clustering = FALSE,
+                  legend.show = T,
+                  legend.is.portrait = F)+
+    tmap::tm_facets(c("year_year","season"),free.coords = FALSE)+
+    tmap::tm_layout(legend.outside = T,
+                    legend.outside.position = "bottom",
+                    legend.position = c(0.1,0.4),
+                    legend.outside.size = 0.15,
+                    legend.text.size = 2,
+                    outer.margins = 0.01)
+# 
+tmap::tmap_save(Map_2021_2023_sea_facet_Here, 
+  file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Maps", "Map_2021_2023_sea_facet_Here.png")
+)
+
+
+```
+
+## Pie plots - by seasons
+
+```{r, include=FALSE, cache=FALSE}
+
+# 1. Create a seasonal column from your datetime column and store in GL_per_1
+GL_per_1 <- GL_per %>%
+  mutate(month = month(datetime),
+         season = case_when(
+           month %in% c(12, 1, 2) ~ "Summer",
+           month %in% c(3, 4, 5) ~ "Autumn",
+           month %in% c(6, 7, 8) ~ "Winter",
+           month %in% c(9, 10, 11) ~ "Spring"
+         ),
+         # Change the factor order to Winter, Spring, Summer, Autumn
+         season = factor(season, levels = c("Winter", "Spring", "Summer", "Autumn"))
+  )
+
+# 2. Filter for Heretaunga and calculate average seasonal GL; store in heretaunga_seasonal_1 
+heretaunga_seasonal_1 <- GL_per_1 %>%
+  filter(NAME == "Heretaunga Plains") %>%
+  group_by(well, season, hydro_year) %>%
+  summarise(avg_GL = mean(GL, na.rm = TRUE), .groups = 'drop')
+
+# 3. Calculate percentiles for each season using historical seasonal averages; store in heretaunga_seasonal_2
+heretaunga_seasonal_2 <- heretaunga_seasonal_1 %>%
+  group_by(well, season) %>%
+  mutate(percentile = percent_rank(avg_GL) * 100) %>%
+  ungroup() %>%
+  mutate(category = case_when(
+    percentile == 0 ~ "Lowest-ever",
+    percentile <= 25 ~ "Below-normal",
+    percentile <= 75 ~ "Normal",
+    percentile < 100 ~ "Above-normal",
+    percentile == 100 ~ "Highest-ever",
+    TRUE ~ "Unknown"
+  ))
+
+# 4. Summarise the counts of each category for plotting; store in plot_data_seasonal_1
+plot_data_seasonal_1 <- heretaunga_seasonal_2 %>%
+  group_by(hydro_year, season, category) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  complete(hydro_year, season, category = c("Highest-ever", "Above-normal", "Normal", "Below-normal", "Lowest-ever"),
+           fill = list(count = 0)) %>%
+  mutate(category = factor(category, levels = c("Highest-ever", "Above-normal", "Normal", "Below-normal", "Lowest-ever"))) %>%
+  group_by(hydro_year, season) %>%
+  mutate(percentage = count / sum(count)) %>%
+  ungroup() %>%
+  filter(hydro_year %in% c(2021, 2022, 2023))
+
+# 5. Generate pie charts by season and hydrological year with hydrological years on the left (rows) and seasons on the top (columns)
+Pie_by_seasons_HP <- ggplot(plot_data_seasonal_1, aes(x = "", fill = category, y = count)) +
+  geom_bar(position = "fill", stat = "identity", width = 1, colour = "white") +
+  geom_text(aes(label = ifelse(percentage == 0, "", paste0(round(percentage * 100, 1), "%"))),
+            position = position_fill(vjust = 0.5),
+            size = 3.5,
+            check_overlap = FALSE) +
+  coord_polar(theta = "y") +
+  facet_grid(hydro_year ~ season) +
+  theme_void() +
+  scale_fill_manual(name = NULL, values = c(
+    "Highest-ever" = "dodgerblue",
+    "Above-normal" = "skyblue",
+    "Normal" = "forestgreen",
+    "Below-normal" = "yellow",
+    "Lowest-ever" = "red"
+  )) +
+  theme(strip.text.x = element_text(size = 14),
+        strip.text.y = element_text(size = 14))
+
+#creates a Map folder
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Pie_plots"), recursive = TRUE, showWarnings = FALSE)
+
+#Saves the pie chart plot to the created folder as a PNG file
+ggsave(filename = file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Pie_plots", "Pie_by_seasons_HP.png"),
+       plot = Pie_by_seasons_HP,
+       width = 10, height = 8, dpi = 300)
+
+```
+
+## Pie plots - by aquifer
+
+Pie charts visualize the **proportion of wells** in each groundwater condition category (`Normal`, `Above-normal`, etc.), grouped by **season and aquifer**.
+
+**Key Dataframes:**
+
+-   **`plot_data_seasonal_1`**: Aggregates groundwater conditions by **season**.
+
+-   **`plot_data_aquifer`**: Summarizes groundwater levels for different **aquifers**.
+
+```{r, include=FALSE, cache=FALSE}
+############################################
+# For Regional Chapter (AQ analysis) ########
+############################################
+
+# Convert hydro_year to numeric and filter recent data from the GL_per dataset
+aq_data <- GL_per %>% 
+  mutate(hydro_year = as.numeric(hydro_year))
+
+aq_latest_year <- 2023
+aq_recent_years <- (aq_latest_year - 2):aq_latest_year
+aq_recent <- aq_data %>% filter(hydro_year %in% aq_recent_years)
+
+# Calculate percentiles and categorise for AQ data.
+# Each GL value is compared to the full historical GL values for the same well in aq_data.
+aq_percentile_summary <- aq_recent %>%
+  group_by(well) %>%
+  mutate(percentile_rank = sapply(GL, function(x) mean(aq_data$GL[aq_data$well == well] <= x) * 100),
+         category = case_when(
+           percentile_rank == 0 ~ "Lowest-ever",
+           percentile_rank <= 25 ~ "Below-normal",
+           percentile_rank <= 75 ~ "Normal",
+           percentile_rank < 100 ~ "Above-normal",
+           percentile_rank == 100 ~ "Highest-ever",
+           TRUE ~ "Unknown"
+         )) %>% 
+  ungroup()
+
+# Ensure all categories are included when summarising
+aq_all_categories <- data.frame(category = c("Lowest-ever", "Below-normal", "Normal", "Above-normal", "Highest-ever"))
+
+# Prepare data for plotting pie charts by location and water year
+aq_plot_data <- aq_percentile_summary %>%
+  group_by(NAME, hydro_year, category) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  complete(NAME, hydro_year, category = aq_all_categories$category, fill = list(count = 0)) %>% 
+  mutate(category = factor(category, levels = c("Highest-ever", "Above-normal", "Normal", "Below-normal", "Lowest-ever")))
+
+# Generate pie charts for each aquifer (excluding "Minor aquifers")
+pie_by_aquifer <- aq_plot_data %>%
+  filter(NAME != "Minor aquifers") %>%
+  group_by(NAME, hydro_year) %>%
+  mutate(percentage = count / sum(count)) %>%
+  ungroup() %>%
+  ggplot(aes(x = "", fill = category, y = count)) +
+  geom_bar(position = "fill", stat = "identity", width = 1, colour = "white") +
+  geom_text(aes(label = ifelse(percentage == 0, "", paste0(round(percentage * 100, 1), "%"))),
+            position = position_fill(vjust = 0.5),
+            size = 3.5,
+            check_overlap = FALSE) +
+  coord_polar(theta = "y") +
+  facet_grid(NAME ~ hydro_year, switch = "y",
+             labeller = labeller(hydro_year = c(
+               "2021" = "2021-2022",
+               "2022" = "2022-2023",
+               "2023" = "2023-2024"
+             ))) +
+  theme_void() +
+  scale_fill_manual(name = NULL, values = c(
+    "Highest-ever" = "dodgerblue",
+    "Above-normal" = "skyblue",
+    "Normal" = "forestgreen",
+    "Below-normal" = "yellow",
+    "Lowest-ever" = "red"
+  )) +
+  theme(strip.text.x = element_text(size = 14))
+
+
+# Create the output folder (if it doesn't already exist)
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Pie_plots"), 
+           recursive = TRUE, showWarnings = FALSE)
+
+# Save the pie chart plot to a PNG file
+ggsave(filename = file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Pie_plots", "Pie_by_Aquifer.png"),
+       plot = pie_by_aquifer,
+       width = 10, height = 8, dpi = 300)
+
+```
+
+# Tables
+
+## Table for Jess
+
+-   In this code chunk we create a table summarising groundwater level conditions
+
+```{r, include=FALSE, cache=FALSE}
+
+############################################
+# For Catchment Chapters (EMA analysis) ####
+############################################
+
+# Filter EMA data to dates before 2024-07-01
+ema_data <- GL_per_1_EMA %>% 
+  filter(datetime < "2024-07-01")
+
+# Calculate recent water years (last 3 years) based on the 'watyr' column
+ema_latest_year <- max(ema_data$watyr)
+ema_recent_years <- (ema_latest_year - 2):ema_latest_year
+ema_recent <- ema_data %>% filter(watyr %in% ema_recent_years)
+
+# Calculate percentiles and categorise for EMA data.
+# Here each GL value is compared to all historical GL values for the same well in ema_data.
+ema_percentile_summary <- ema_recent %>%
+  group_by(well) %>%
+  mutate(percentile_rank = sapply(GL, function(x) mean(ema_data$GL[ema_data$well == well] <= x) * 100),
+         category = case_when(
+           percentile_rank == 0 ~ "Lowest-ever",
+           percentile_rank <= 25 ~ "Below-normal",
+           percentile_rank <= 75 ~ "Normal",
+           percentile_rank < 100 ~ "Above-normal",
+           percentile_rank == 100 ~ "Highest-ever",
+           TRUE ~ "Unknown"
+         )) %>% 
+  ungroup()
+
+# Ensure all categories are included when summarising
+ema_all_categories <- data.frame(category = c("Lowest-ever", "Below-normal", "Normal", "Above-normal", "Highest-ever"))
+
+# Create a summary table for water years 2021, 2022, 2023, grouped by EMA and water year
+ema_percentile_summary_table <- ema_percentile_summary %>%
+  filter(watyr %in% c(2021, 2022, 2023)) %>%
+  group_by(EMA, watyr) %>%
+  summarise(
+    average_percentile = round(mean(percentile_rank, na.rm = TRUE), 2),
+    median_percentile = round(median(percentile_rank, na.rm = TRUE), 2),
+    lowest_ever_count = sum(category == "Lowest-ever"),
+    lowest_ever_percentage = round((sum(category == "Lowest-ever") / n()) * 100, 2),
+    below_normal_count = sum(category == "Below-normal"),
+    below_normal_percentage = round((sum(category == "Below-normal") / n()) * 100, 2),
+    normal_count = sum(category == "Normal"),
+    normal_percentage = round((sum(category == "Normal") / n()) * 100, 2),
+    above_normal_count = sum(category == "Above-normal"),
+    above_normal_percentage = round((sum(category == "Above-normal") / n()) * 100, 2),
+    highest_ever_count = sum(category == "Highest-ever"),
+    highest_ever_percentage = round((sum(category == "Highest-ever") / n()) * 100, 2),
+    total_count = n(),
+    wells_count = n_distinct(well),
+    .groups = 'drop'
+  )
+
+#creates a Map folder
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Tables"), recursive = TRUE, showWarnings = FALSE)
+
+# Export the EMA summary table to CSV in the newly created folder
+write.table(ema_percentile_summary_table, 
+            file = file.path(rprojroot::find_rstudio_root_file(), "3_State_analysis", "Tables", "groundwater_percentiles_summary.csv"), 
+            sep = ",", row.names = FALSE, quote = FALSE)
+
+# No_unique_wells_tests <- MK_results_combined_1 %>% 
+#   group_by(period,area) %>% 
+#   distinct(well) %>% 
+#   summarise(n=dplyr::n()) %>% 
+#   pivot_wider(names_from = period, values_from = n)
+
+
+```

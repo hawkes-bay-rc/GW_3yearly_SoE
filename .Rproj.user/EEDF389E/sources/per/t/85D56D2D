@@ -1,0 +1,28 @@
+{
+    "id": "85D56D2D",
+    "path": "C:/Users/simon/Hawkes Bay Regional Council/Environmental Science - General/Hydrology and Groundwater projects/2120_Groundwater_Quantity/Reports/SoE_technical_reports/2023-2024/RscriptGWL/1_Exploration_analysis_pt1/Exploration.Rmd",
+    "project_path": "1_Exploration_analysis_pt1/Exploration.Rmd",
+    "type": "r_markdown",
+    "hash": "324523246",
+    "contents": "",
+    "dirty": false,
+    "created": 1741302833867.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "chunk_output_type": "inline",
+        "source_window_id": "",
+        "Source": "Source",
+        "last_setup_crc32": "4e89aa0ca659e873",
+        "cursorPosition": "160,52",
+        "scrollLine": "150"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1741303499,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1741303499866,
+    "read_only": false,
+    "read_only_alternatives": []
+}

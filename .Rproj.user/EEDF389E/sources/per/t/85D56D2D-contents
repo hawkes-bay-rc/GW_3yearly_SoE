@@ -1,0 +1,373 @@
+---
+title: "Exploring the Groundwater Level Database"
+output:
+  html_notebook:
+    toc: yes
+    toc_depth: 4
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+    number_sections: false
+    theme: readable
+    df_print: paged
+---
+
+
+```{=html}
+<style>
+/* Adjust settings for the Table of Contents (TOC) */
+#TOC {
+    margin: 80px 0 20px -180px; /* Slightly reduced margin for better positioning */
+}
+div.tocify {
+    width: 100%; /* Ensures it adapts well to different screen sizes */
+    max-width: 500px;
+    max-height: 100vh; /* Ensures TOC never exceeds the viewport height */
+    overflow-y: auto; /* Adds scroll if content exceeds max-height */
+}
+
+/* Style for the title */
+h1.title {
+    color: #66b2b2;
+    font-weight: bold;
+    font-size: 42px;
+    text-align: center; /* Centers the title */
+    margin-bottom: 20px; /* Adds spacing below the title */
+}
+
+/* Body styles */
+body {
+    text-align: justify;
+    font-size: 16pt;
+    line-height: 1.6; /* Improves readability with better line spacing */
+}
+
+/* Main container styles */
+div.main-container {
+    max-width: 1280px; /* Reduced slightly for better content width balance */
+    margin: 0 auto; /* Centers the container */
+    padding: 20px; /* Adds internal spacing */
+    box-sizing: border-box; /* Ensures padding doesn’t affect max-width */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #TOC {
+        margin: 50px 0 10px -100px; /* Adjusts TOC margin for smaller screens */
+    }
+    div.tocify {
+        width: 100%;
+        max-width: 100%;
+    }
+    h1.title {
+        font-size: 36px; /* Reduces title size for smaller screens */
+    }
+    body {
+        font-size: 14pt; /* Slightly reduces text size for better mobile viewing */
+    }
+    div.main-container {
+        max-width: 95%; /* Allows more flexibility on smaller screens */
+        padding: 10px;
+    }
+}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(lubridate)
+library(Hilltop)
+library(dplyr)
+library(stringr)
+
+```
+
+################################################################################################################################################################################################ 
+
+This script retrieves data from the in-house database. Users do not need to run this script as the processed data is available in .RData format for use in the next stage.
+
+```{r Explore_hilltop, include=FALSE, cache=FALSE}
+# Step 1: Extract groundwater level data from Hilltop 
+dfile <- Hilltop::HilltopData("M:/E_Science/IT/Tideda/HilltopArchive/MonitorWells.hts")
+```
+
+| 
+| 
+
+## Introduction
+
+Groundwater levels in Hawke's Bay are measured monthly, with some sites equipped with loggers that continuously record groundwater levels. However, monthly measurements are not evenly spaced, occurring anywhere between 1 to 4 weeks apart. In some cases, measurements have been taken twice within a month or missed entirely in the preceding month.
+
+Data gaps exist for various reasons, including access issues, staff resourcing constraints, and competing monitoring commitments. Before conducting any assessments on groundwater levels, it is essential to examine the database to understand how the data is structured and how this may impact data retrieval and subsequent analysis.
+
+### About Hilltop monitor wells
+
+Groundwater level data, whether collected for state of the environment monitoring, compliance, or investigations, is stored in MonitorWells.hts, a database format used by Hilltop. This file currently contains 373 unique sites and 34 different measurement datums.
+
+In most cases, groundwater levels are measured relative to a measuring point. However, other datums used at some sites include measurements relative to land surface, mean sea level, Hawke's Bay datum, stage levels, and others. To minimize errors associated with changes to measuring points and to ensure groundwater levels can be compared consistently across sites, it is preferable to measure groundwater levels against a common reduced level.
+
+### Number of sites and measurement sources
+
+The Hilltop file monitorwells.hts contains `r nrow(No_sites)` sites and `r nrow(No_datums)` different data sources or datums. Together, these provide `r nrow(measurements1)` unique site and measurement combinations.
+
+```{r Explore_hilltop1 , include=FALSE, cache=FALSE}
+# list the sites and measurements
+measurements1 <- Hilltop::MeasurementList(dfile,"") 
+No_sites <- dplyr::data_frame(unique(measurements1$Site))
+No_datums <- dplyr::data_frame(unique(measurements1$Measurement))
+
+```
+
+`r measurements1` <!--this will provide an output of the dataframe-->
+
+### Number of sites per measurment source
+
+The measurement source with the greatest number of sites is "depth from Measuring Point [Manual Water Level]" followed by "Elevation Above Sea Level [Manual Water Level].
+
+```{r Explore_hilltop2,  echo=FALSE, message=FALSE, warning=FALSE}
+# list the sites and measurements
+Measurement_Summary <- measurements1 %>% 
+  dplyr::group_by(Measurement) %>% 
+  dplyr::summarise(Number_of_sites = n()) %>% 
+  dplyr::arrange(desc(Number_of_sites))
+
+
+measurements1 %>% dplyr::filter(Measurement=="Depth From Measuring Point [Manual Water Level]") %>% base::nrow()
+
+```
+
+`r Measurement_Summary`<!--this will provide an output of the dataframe-->
+
+################################################################################################################################################################################################ 
+
+## Data Retrieval method
+
+At the Council, groundwater levels are typically measured relative to a Measuring Point, from which they are then converted to depths relative to other datums. The four main datums used for State of the Environment monitoring are:
+
+-   Depth relative to land surface
+-   Depth relative to mean sea level (MSL=0), and
+-   Depth relative to Hawke's Bay datum (MSL+10)
+
+Not all sites will have groundwater levels relative to these datums. Some sites have been measured to different datums or to the same datum but with different names. This makes retrieving groundwater level information somewhat problematic.
+
+Ideally, groundwater levels will be measured relative to a common reduced level to minimise errors caused by changes to measuring points and so groundwater levels can be compared between sites. Such changes are sometimes subtle and not easily identifiable within water level records.
+
+Retrieving groundwater levels relative to a common reduced level is ideal when all sites are measured against the same datum. However, not all sites use the same datum, which means some useful sites may be excluded if only one datum is used for subsequent analysis. To maximise the number of sites and groundwater level data available for assessing state and trends, groundwater levels are retrieved in stages according to a hierarchy of data quality (see figure below).
+
+![Figure XX: Sources of groundwater monitoring data](Images/Retrieval_process.PNG)
+
+```{r Explore_hilltop3 , include=FALSE, cache=FALSE}
+# Filter sites with MSL datums (Manual and Recorder)
+# Filter sites with MSL datums (Manual and Recorder)
+data_set1 <- measurements1 %>% 
+  dplyr::filter(Measurement %in% c("Elevation Above Sea Level [Manual Water Level]", "Elevation Above Sea Level [Recorder Water Level]"))
+
+data_set1_manual <- data_set1 %>% 
+  dplyr::filter(Measurement == "Elevation Above Sea Level [Manual Water Level]")
+
+data_set1_recorder <- data_set1 %>% 
+  dplyr::filter(Measurement == "Elevation Above Sea Level [Recorder Water Level]")
+
+# Filter non-MSL sites
+data_set2 <- measurements1 %>% 
+  dplyr::filter(!Measurement %in% c("Elevation Above Sea Level [Manual Water Level]", "Elevation Above Sea Level [Recorder Water Level]"))
+
+# Sites in data_set2 but not in data_set1
+data_set2a <- anti_join(data_set2, data_set1, by = "Site")
+
+# Filter non-MSL sites with measurements relative to Hawke's Bay datum
+data_set3 <- data_set2a %>% 
+  dplyr::filter(Measurement %in% c("Hawkes Bay Datum [Manual Water Level]", "Hawkes Bay Datum [Recorder Water Level]"))
+
+data_set3_manual <- data_set3 %>% 
+  dplyr::filter(Measurement == "Hawkes Bay Datum [Manual Water Level]")
+
+data_set3_recorder <- data_set3 %>% 
+  dplyr::filter(Measurement == "Hawkes Bay Datum [Recorder Water Level]")
+
+# Filter remaining non-MSL sites without Hawke's Bay datum
+data_set4 <- data_set2a %>% 
+  dplyr::filter(!Measurement %in% c("Hawkes Bay Datum [Manual Water Level]", "Hawkes Bay Datum [Recorder Water Level]"))
+
+# Sites in data_set4 but not in data_set3
+data_set4a <- dplyr::anti_join(data_set4, data_set3, by = "Site")
+
+# Filter sites with measurements relative to Measuring Point
+data_set5 <- data_set4a %>% 
+  dplyr::filter(Measurement %in% c("Depth From Measuring Point [Manual Water Level]", "Depth From Measuring Point [Recorder Water Level]"))
+
+data_set5_manual <- data_set5 %>% 
+  dplyr::filter(Measurement == "Depth From Measuring Point [Manual Water Level]")
+
+data_set5_recorder <- data_set5 %>% 
+  dplyr::filter(Measurement == "Depth From Measuring Point [Recorder Water Level]")
+
+# Filter remaining sites without Measuring Point datum
+data_set6 <- data_set4a %>% 
+  dplyr::filter(!Measurement %in% c("Depth From Measuring Point [Manual Water Level]", "Depth From Measuring Point [Recorder Water Level]"))
+
+# Sites in data_set6 but not in data_set5
+data_set6a <- anti_join(data_set6, data_set5, by = "Site")
+
+# Filter sites with measurements relative to Puddle
+data_set7 <- data_set6a %>% 
+  dplyr::filter(Measurement %in% c("Elevation Above Sea Level [Puddle Manual Water Level]", "Elevation Above Sea Level [Puddle Recorder Water Level]"))
+
+data_set7_manual <- data_set7 %>% 
+  dplyr::filter(Measurement == "Elevation Above Sea Level [Puddle Manual Water Level]")
+
+data_set7_recorder <- data_set7 %>% 
+  dplyr::filter(Measurement == "Elevation Above Sea Level [Puddle Recorder Water Level]")
+
+# Filter remaining sites without Puddle datum
+data_set8 <- data_set6a %>% 
+  dplyr::filter(!Measurement %in% c("Elevation Above Sea Level [Puddle Manual Water Level]", "Elevation Above Sea Level [Puddle Recorder Water Level]"))
+
+# Sites in data_set8 but not in data_set7
+data_set8a <- dplyr::anti_join(data_set8, data_set7, by = "Site")
+
+# Filter sites with measurements relative to Puddle1
+data_set9 <- data_set8a %>% 
+  dplyr::filter(Measurement %in% c("Depth From Measuring Point [Puddle Manual Water Level]", "Depth From Measuring Point [Puddle Recorder Water Level]"))
+
+data_set9_manual <- data_set9 %>% 
+  dplyr::filter(Measurement == "Depth From Measuring Point [Puddle Manual Water Level]")
+
+data_set9_recorder <- data_set9 %>% 
+  dplyr::filter(Measurement == "Depth From Measuring Point [Puddle Recorder Water Level]")
+
+# Filter remaining sites without Puddle1 datum
+data_set10 <- data_set8a %>% 
+  dplyr::filter(!Measurement %in% c("Depth From Measuring Point [Puddle Manual Water Level]", "Depth From Measuring Point [Puddle Recorder Water Level]"))
+
+# Sites in data_set10 but not in data_set9
+data_set10a <- dplyr::anti_join(data_set10, data_set9, by = "Site")
+
+# Filter sites with measurements relative to Stage [Historic Manual Water Level]
+data_set11 <- data_set10a %>% 
+  dplyr::filter(Measurement %in% c("Stage [Historic Manual Water Level]", "Stage [Historic Auto Water Level]"))
+
+data_set11_manual <- data_set11 %>% 
+  dplyr::filter(Measurement == "Stage [Historic Manual Water Level]")
+
+data_set11_recorder <- data_set11 %>% 
+  dplyr::filter(Measurement == "Stage [Historic Auto Water Level]")
+
+# Filter remaining sites without Stage [Historic Manual Water Level]
+data_set12 <- data_set10a %>% 
+  dplyr::filter(!Measurement %in% c("Stage [Historic Manual Water Level]", "Stage [Historic Auto Water Level]"))
+
+# Sites in data_set12 but not in data_set11
+data_set12a <- dplyr::anti_join(data_set12, data_set11, by = "Site")
+
+
+```
+
+## Site selection
+
+The original Hilltop file (monitorwells.hts) contained `r nrow(No_sites)` sites and `r nrow(No_datums)` different data sources or datums. Together, this provided `r nrow(measurements1)` different site and measurement combinations for retrieving groundwater level data. Using the methodology described above the sites chosen for groundwater level data retrieval were reduced to `r nrow(Merge_unique_sites)` and `r nrow(Merge_No_datums)` different data sources or datums, producing `r nrow(Merge_sites)` different site and measurement combinations. The next stage is to retrieve and explore the groundwater level data sets associated with these sites.
+
+```{r Explore_hilltop9, include=FALSE, cache=FALSE}
+# Merging sites
+Merge_sites <- Reduce(function(...) merge(..., all=TRUE), list(data_set1, data_set3, data_set5,data_set7,data_set9,data_set11))
+Merge_unique_sites <- data.frame(unique(Merge_sites$Site))
+Merge_No_datums <- dplyr::data_frame(unique(Merge_sites$Measurement))
+Merge_Summary <- Merge_sites %>% 
+  dplyr::group_by(Measurement) %>% 
+  dplyr::summarise(Number_of_sites = n())
+```
+
+## Retrieve Data
+
+The data is retrieved using the Hilltop R package. Loops are developed to retrieve groundwater levels. This function requires the following information
+
+-   GetData(obj, siteName, measurement, startTime, endTime, method="", interval="", alignment="", gapTolerance="", WQParams=FALSE, ParamFilter="")
+
+Dataframes filtered using the previously established hierarchy are used to select which sites and data to query. Groundwater levels are retrieved from both discrete (manual measurements) and continuous (recorder) datasets. These discrete and continuous data sets are then combined to form the final dataset used for state and trend analysis.
+
+```{r Get_data, include=FALSE, cache=FALSE}
+
+retrieve_data <- function(data_set, dfile) {
+  data_result <- NULL
+  length <- length(data_set$Site)
+  for(sm in 1:length) {
+    tempdata <- NULL
+    zoodata <- NULL
+    site <- data_set$Site[sm]
+    meas <- data_set$Measurement[sm]
+    zoodata <- tryCatch({
+      GetData(dfile, site, meas, "", "", method="", interval="")
+    }, error = function(err) {
+      message(paste(site, meas, err))
+    })
+    if(!is.null(zoodata)) {
+      tempdata <- fortify.zoo(zoodata)
+      tempdata$Site <- site
+      tempdata$Measurement <- meas
+      if(is.null(data_result)) {
+        data_result <- tempdata
+      } else {
+        data_result <- dplyr::bind_rows(data_result, tempdata)
+      }
+    }
+  }
+  return(data_result)
+}
+
+# Retrieve data for each data set and add '1' to the end of the names
+data_set1_data_man <- retrieve_data(data_set1_manual, dfile)
+data_set1_data_rec <- retrieve_data(data_set1_recorder, dfile)
+data_set3_data_man <- retrieve_data(data_set3_manual, dfile)
+data_set3_data_rec <- retrieve_data(data_set3_recorder, dfile)
+data_set5_data_man <- retrieve_data(data_set5_manual, dfile)
+data_set5_data_rec <- retrieve_data(data_set5_recorder, dfile)
+data_set7_data_man <- retrieve_data(data_set7_manual, dfile)
+data_set7_data_rec <- retrieve_data(data_set7_recorder, dfile)
+data_set9_data_man <- retrieve_data(data_set9_manual, dfile)
+data_set9_data_rec <- retrieve_data(data_set9_recorder, dfile)
+data_set11_data_man <- retrieve_data(data_set11_manual, dfile)
+data_set11_data_rec <- retrieve_data(data_set11_recorder, dfile)
+
+
+```
+
+```{r combine_data_sets, include=FALSE,  echo=FALSE, message=FALSE, warning=FALSE}
+
+data_set_com <- dplyr::bind_rows(
+  data_set1_data_man, data_set1_data_rec,
+  data_set3_data_man, data_set3_data_rec,
+  data_set5_data_man, data_set5_data_rec,
+  data_set7_data_man, data_set7_data_rec,
+  data_set9_data_man, data_set9_data_rec,
+  data_set11_data_man, data_set11_data_rec
+) %>% 
+ na.omit(data_set_com)
+
+#test <- unique(data_set_com$Site)
+
+#Here we  calculate the average monthly groundwater level for each site.  This is achieved by combining both manual and recorder measurements which significantly reduces the size of the dataset.  
+
+data_set_com1 <- data_set_com %>% 
+  dplyr::filter(str_detect(Site,"Well\\.+[0-9]+")) %>% # Use this to remove sites without well numbers
+  dplyr::mutate(my_month=lubridate::floor_date(Index,"month")) %>% 
+  dplyr::group_by(Site,my_month) %>% 
+  dplyr::summarise(av_gl=mean(zoodata)) %>% 
+  dplyr::mutate(well=Site) %>%  #here we create a new column for well number
+  dplyr::mutate(well=stringr::str_extract(Site,"Well\\.+[0-9]+")) %>% 
+  dplyr::mutate(well=sub("Well\\.+","",well)) %>% 
+  dplyr::mutate(well=as.integer(well)) %>% 
+  dplyr::mutate(month=format(my_month,"%B"),year=format(my_month,"%Y"))
+
+#Add date to file
+save(data_set_com1, file = paste0("2_Data_error_checking_and_cleaning/", Sys.Date(), "_data_set_com1.RData"))
+
+```
+
+
+## Data Error Checking and Cleaning
+
+ A separate script has been developed for this step, which can be found at:
+ 
+ 2_Data_error_checking_and_cleaning/data_error_checking_script.Rmd
+

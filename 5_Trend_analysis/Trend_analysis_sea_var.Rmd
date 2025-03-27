@@ -1,0 +1,1392 @@
+---
+title: "Groundwater level trends for seasaonal variation"
+output:
+  html_notebook:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    number_sections: false
+    theme: lumen
+    fig.cap: TRUE
+    df_print: paged
+---
+
+```{=html}
+<style>
+/* Adjust settings for the Table of Contents (TOC) */
+#TOC {
+    margin: 80px 0 20px -180px; /* Slightly reduced margin for better positioning */
+}
+div.tocify {
+    width: 100%; /* Ensures it adapts well to different screen sizes */
+    max-width: 500px;
+    max-height: 100vh; /* Ensures TOC never exceeds the viewport height */
+    overflow-y: auto; /* Adds scroll if content exceeds max-height */
+}
+
+/* Style for the title */
+h1.title {
+    color: #66b2b2;
+    font-weight: bold;
+    font-size: 42px;
+    text-align: center; /* Centers the title */
+    margin-bottom: 20px; /* Adds spacing below the title */
+}
+
+/* Body styles */
+body {
+    text-align: justify;
+    font-size: 16pt;
+    line-height: 1.6; /* Improves readability with better line spacing */
+}
+
+/* Main container styles */
+div.main-container {
+    max-width: 1280px; /* Reduced slightly for better content width balance */
+    margin: 0 auto; /* Centers the container */
+    padding: 20px; /* Adds internal spacing */
+    box-sizing: border-box; /* Ensures padding doesn’t affect max-width */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #TOC {
+        margin: 50px 0 10px -100px; /* Adjusts TOC margin for smaller screens */
+    }
+    div.tocify {
+        width: 100%;
+        max-width: 100%;
+    }
+    h1.title {
+        font-size: 36px; /* Reduces title size for smaller screens */
+    }
+    body {
+        font-size: 14pt; /* Slightly reduces text size for better mobile viewing */
+    }
+    div.main-container {
+        max-width: 95%; /* Allows more flexibility on smaller screens */
+        padding: 10px;
+    }
+}
+</style>
+```
+## Load Packages
+
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(echo = TRUE)
+# knitr::opts_knit$set(root.dir = "M:/E_Science/Projects/330 GW Quantity/330 SOE reporting/SOE 5 yearly technical report/2020-2023/R_script")
+
+library(RODBC)
+library(sf)
+library(dplyr)
+library(EnvStats)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(cowplot)
+library(rprojroot)
+
+
+# library(lubridate)
+# library(tidyverse)
+
+
+
+# library(here)
+# library(kableExtra)
+# library(reactable)
+
+# library(readr)
+# library(grid)
+
+```
+
+## Load file
+
+This section automates the retrieval and loading of the most recent groundwater dataset **(`data_set_clean`)** for error checking and trend analysis.
+
+#### **Key Functions:**
+
+-   Directory Setup:
+
+    -   Defines the target directory (`2_Data_error_checking_and_cleaning`) for raw data.
+
+    -   Sets the state directory (`4_Trend_analysis`) for trend analysis workflows
+
+-   File Identification:
+
+    -   Uses a regex pattern (`^\\d{4}-\\d{2}-\\d{2}_data_set_clean\\.RData$`) to find the most recent dataset.
+
+    -   Lists all files matching the expected naming format.
+
+-   File Loading:
+
+    -   Checks for available files.
+
+    -   Loads the most recent dataset if available.
+
+    -   Returns an error message if no matching files are found.
+
+#### **Key Data Components:**
+
+-   **`data_set_clean`**: The dataset containing groundwater monitoring records.
+
+-   **`target_dir`**: Directory where error-checked data is stored.
+
+-   **`state_dir`**: Directory where trend analysis results are processed.
+
+#### **Process Overview:**
+
+1.  Define Directories:
+
+    -   Sets paths for raw data **(`target_dir`)** and analysis data **(`state_dir`)**.
+
+2.  Identify Latest Dataset:
+
+    -   Finds the most recent version of `data_set_clean`.
+
+3.  Load the Dataset:
+
+    -   Loads only the latest available dataset.
+
+    -   Displays a confirmation message upon successful loading.
+
+    -   Returns an error message if no file is found.
+
+#### **Output:**
+
+-   Automatically loads the latest **`data_set_clean`** dataset for further processing.
+
+-   Ensures consistency in data selection for error checking and trend analysis.
+
+-   Handles missing files gracefully, preventing workflow disruptions.
+
+This automated data retrieval system improves workflow efficiency, ensuring the latest groundwater data is always used in trend analysis and reporting.
+
+```{r , include=FALSE, cache=FALSE}
+# Set the target directory
+
+# Set the directory where the file is saved
+# As of 16/09/2024 this works
+target_dir <- file.path(rprojroot::find_rstudio_root_file(), "2_Data_error_checking_and_cleaning")
+
+state_dir <- file.path(rprojroot::find_rstudio_root_file(), "5_Trend_analysis")
+
+# Define the pattern to match the files with the desired prefix
+pattern <- "^\\d{4}-\\d{2}-\\d{2}_data_set_clean\\.RData$"
+
+# List files in the directory that match the pattern
+files <- list.files(path = target_dir, pattern = pattern, full.names = TRUE)
+
+# Check if there are matching files
+if (length(files) > 0) {
+  # Load the most recent file (if there are multiple, pick the first one)
+  load(files[1])
+  message("Loaded file: ", files[1])
+} else {
+  stop("No matching files found.")
+}
+
+```
+
+## Load GIS data
+
+This section retrieves and processes geospatial data related to groundwater monitoring wells. It reads shapefiles and transforms coordinate reference systems (CRS) for compatibility.
+
+**Key Dataframes:**
+
+-   **`allbasins`**: Shapefile of all groundwater basins.
+
+-   **`Regional_boundary_sf`**: Defines regional boundaries.
+
+-   **`Quaternary_aquifers`** and **`Pre_quaternary_aquifers`**: Define aquifer extents.
+
+-   **`SoE_FMUs`**: State of Environment (SoE) Functional Management Units.
+
+-   **`EMA_sf`**: Defines Environmental Management Areas (EMAs).
+
+```{r , include=FALSE, cache=FALSE}
+# Define whether to update data. Set to TRUE if you want to force retrieval from the database.
+update_wellstor_data <- FALSE
+
+# Define the GIS layers directory
+gis_dir <- file.path(rprojroot::find_rstudio_root_file(), "GIS_layers")
+
+# Find any existing WellStor shapefiles with a date stamp (pattern: "WellStor_YYYYMMDD.shp")
+shp_files <- list.files(gis_dir, pattern = "^WellStor_\\d{8}\\.shp$", full.names = TRUE)
+
+if (!update_wellstor_data && length(shp_files) > 0) {
+  # If not updating and there are existing shapefiles, pick the most recent one
+  file_dates <- sapply(shp_files, function(f) {
+    base <- basename(f)
+    date_str <- sub("^WellStor_(\\d{8})\\.shp$", "\\1", base)
+    as.Date(date_str, format = "%Y%m%d")
+  })
+  most_recent_file <- shp_files[which.max(file_dates)]
+  # The shapefile is assumed to be in NZTM
+  WellStor_sf_NZTM <- st_read(most_recent_file)
+  message("Loaded WellStor from shapefile: ", most_recent_file)
+} else {
+  # Either update_wellstor_data is TRUE or no file exists, so retrieve new data
+  Con <- RODBC::odbcConnect("HBRCData64", uid = "", pwd = "")
+  on.exit(RODBC::odbcClose(Con))
+  
+  WellStor <- RODBC::sqlQuery(Con, "
+    SELECT WELLBore.BoreNo AS well, 
+           WELLBore.Easting AS x, 
+           WELLBore.Northing AS y, 
+           WELLBore.SOE_WL, 
+           WELLBore.SOE_WQ
+    FROM HbrcDB.dbo.WELLBore WELLBore", 
+    stringsAsFactors = FALSE) %>%
+    mutate(well = as.factor(well))
+  
+  # Convert the data frame to an sf object using NZMG coordinates (EPSG:27200)
+  WellStor_sf_NZMG <- st_as_sf(WellStor, coords = c("x", "y"), crs = 27200)
+  
+  # Transform the data to NZTM (EPSG:2193)
+  WellStor_sf_NZTM <- st_transform(WellStor_sf_NZMG, crs = 2193)
+  
+  # Create a date stamp for today's date and define the shapefile path
+  date_stamp <- format(Sys.Date(), "%Y%m%d")
+  wellstor_shp_path <- file.path(gis_dir, paste0("WellStor_", date_stamp, ".shp"))
+  
+  # Save the NZTM sf object as a shapefile with the date stamp in the file name
+  st_write(WellStor_sf_NZTM, wellstor_shp_path)
+  message("WellStor shapefile created and saved: ", wellstor_shp_path)
+}
+
+# Ensure that WellStor_sf_NZMG is available by generating it from the NZTM data if needed
+if (!exists("WellStor_sf_NZMG")) {
+  WellStor_sf_NZMG <- st_transform(WellStor_sf_NZTM, crs = 27200)
+  message("Generated WellStor_sf_NZMG from NZTM data")
+}
+
+# Ensure that the WellStor attribute dataframe is available
+if (!exists("WellStor")) {
+  WellStor <- st_drop_geometry(WellStor_sf_NZTM)
+  message("Generated WellStor dataframe from NZTM data")
+}
+
+# Continue with the rest of your GIS layers and processing...
+allbasins <- st_read(file.path(gis_dir, "All_basins7.shp"), crs = 2193) %>% 
+  dplyr::select(NAME)
+
+Regional_boundary_sf <- st_read(file.path(gis_dir, "Regional_boundary.shp"))
+st_crs(Regional_boundary_sf) <- 2193  # for NZTM
+Regional_boundary_sf <- st_transform(Regional_boundary_sf, 2193) %>% 
+  st_cast("MULTILINESTRING")
+
+Quaternary_aquifers <- st_read(file.path(gis_dir, "Quaternary_deposits.shp"), crs = 2193)
+Pre_qauaternary_aquifers <- st_read(file.path(gis_dir, "Hard_rock_aquifers.shp"), crs = 2193)
+
+bb_box <- st_read(file.path(gis_dir, "bb_box.shp"), crs = 2193) %>% 
+  st_cast("MULTILINESTRING")
+
+SoE_FMUs <- st_read(file.path(gis_dir, "SoE_Areas.shp"), crs = 2193) %>% 
+  dplyr::select(FMU)
+
+HP_plains_sf <- st_read(file.path(gis_dir, "HP_boundary.shp"))
+st_crs(HP_plains_sf) <- 2193  # EPSG for NZTM 2000
+
+RP_plains_sf <- st_read(file.path(gis_dir, "RuaPlains_boundary.shp"))
+st_crs(RP_plains_sf) <- 2193  # EPSG for NZTM 2000
+
+EMA_sf <- st_read(file.path(gis_dir, "EMA.shp"))
+
+```
+
+## Prepare Files
+
+This section processes groundwater level data to generate datasets filtered by data coverage criteria for trend analysis. The code creates a main dataset for all available data and a subset focusing on data from August, ensuring only wells with sufficient data coverage are included.
+
+#### Key Functions:
+
+-   Data Preparation:
+
+    -   Creates unique identifiers (label, label1) for each well based on month and year.
+
+    -   Converts the month variable to a factor with a hydrological order (January to December).
+
+    -   Ensures the year is stored as an integer for numerical operations.
+
+    -   Removes rows with missing values to maintain dataset integrity.
+
+    -   Calculates the maximum and minimum groundwater levels (max_level and min_level) and computes their difference (max_min_diff) for each well per year.
+
+-   Data Filtering for Quality:
+
+    -   Determines monitoring period start and end dates for each well.
+
+    -   Calculates actual monitoring duration (actual_monitoring) as a fraction of years based on monthly data.
+
+    -   Computes the number of years monitored (years_monitored) and the coverage ratio (coverage = actual_monitoring / years_monitored).
+
+    -   Retains only wells with at least 80% data coverage and a minimum of 5 years of data.
+
+    -   Creates a period label (e.g. "Full") to indicate the dataset's temporal span.
+
+    -   Produces a subset of the data (All_GL1) for the month of August.
+
+-   Dataset Storage:
+
+    -   Ensures that the output directory exists for storing the processed data.
+
+    -   Saves the final filtered dataset to an RData file with a timestamped filename.
+
+#### Key Data Components:
+
+-   data_set_clean: The original dataset containing groundwater level measurements.
+
+-   trend: An intermediate dataset that includes unique well identifiers, factorised months, and computed groundwater level differences.
+
+-   All_GL: The main filtered dataset comprising wells with sufficient data coverage for the full monitoring period.
+
+-   All_GL1: A subset of All_GL filtered for the month of August.
+
+-   coverage: The ratio of actual monitoring records to the expected number of monitoring years.
+
+#### Process Overview:
+
+1.  Prepare Data:
+
+-   Generate unique well labels by concatenating well, month, and year.
+
+-   Convert the month variable to a factor with the order from January to December.
+
+-   Assign the groundwater level (GL) values to a new column and convert year to an integer.
+
+-   Remove missing values and calculate maximum, minimum, and the difference in groundwater levels per well and year.
+
+-   Check for duplicate measurements using the unique label.
+
+2.  Filter Data for Quality:
+
+-   Group data by well and calculate monitoring period start and end dates.
+
+-   Determine actual monitoring duration, years monitored, and the coverage ratio.
+
+-   Filter to retain wells with a coverage of at least 80% and a minimum of 5 years of data.
+
+-   Label the filtered dataset with the period "Full" and create a subset specifically for August.
+
+3.  Save Processed Data:
+
+-   Ensure that the RData_files folder exists within the designated trend analysis directory.
+
+-   Save the final filtered dataset (All_GL) to an RData file with a date-stamped filename for reproducibility and future reference.
+
+#### Output:
+
+-   Filtered Groundwater Level Dataset (All_GL):
+
+    -   Contains data only for wells with sufficient coverage, ensuring high-quality input for trend analysis.
+
+    -   Serves as the primary dataset for comprehensive trend testing over the entire monitoring period.
+
+-   Filtered August Subset (All_GL1):
+
+    -   Focuses on data from August, providing a seasonal perspective on groundwater trends.
+
+-   Saved RData File:
+
+    -   The processed dataset is stored in the specified directory, supporting consistent and reproducible further analysis.
+
+This structured approach to data preparation ensures robust filtering, enhancing the reliability of subsequent trend analyses and supporting long-term groundwater monitoring efforts.
+
+```{r, include=FALSE, cache=FALSE}
+
+#Prepare data set for analysis
+trend <- data_set_clean %>% 
+  mutate(label = paste(well,month,year)) %>% 
+  mutate(label1 = paste(well,month)) %>% 
+  mutate(month = factor(month, levels = c("January", "February", "March", "April", "May", "June","July", "August", "September", "October", "November", "December"))) %>% 
+  mutate(value = GL) %>%                       # Assuming 'GL' is a column in your dataframe
+  mutate(year = as.integer(year)) %>% 
+  na.omit() %>%                                      # Removing rows with NA values
+  group_by(well, year) %>%
+  mutate(
+    max_level = max(av_gl, na.rm = TRUE),
+    min_level = min(av_gl, na.rm = TRUE),
+    max_min_diff = max_level - min_level) %>% 
+  ungroup() 
+ 
+trend$label[duplicated(trend$label)] #check for duplicate measurements
+
+#Create datasets with 80% data coverage over the monitoring period and minimum of 5 years (5 data points)
+All_GL <- trend %>%
+  group_by(well) %>%
+  mutate(
+    end_date = max(datetime), 
+    start_date = min(datetime)    ,
+    actual_monitoring = round((n() - 1) / 12, 2),
+    years_monitored = round(as.numeric((end_date - start_date) / 365.25), 1),
+    coverage = actual_monitoring / years_monitored,
+    year = as.numeric(year)
+  ) %>%
+  filter(coverage >= 0.8, years_monitored >= 5) %>%
+  mutate(period = "Full") 
+
+All_GL1 <- trend %>%
+  group_by(well) %>%
+  mutate(
+    end_date = max(datetime), 
+    start_date = min(datetime)    ,
+    actual_monitoring = round((n() - 1) / 12, 2),
+    years_monitored = round(as.numeric((end_date - start_date) / 365.25), 1),
+    coverage = actual_monitoring / years_monitored,
+    year = as.numeric(year)
+  ) %>%
+  filter(coverage >= 0.8, years_monitored >= 5) %>%
+  mutate(period = "Full") %>% 
+  filter(month == "August")
+
+# Ensure the RData_files folder exists inside 4_trend_analysis
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "5_trend_analysis", "RData_files"), recursive = TRUE, showWarnings = FALSE)
+
+# Save the data inside the specified folder
+save(All_GL, file = file.path(rprojroot::find_rstudio_root_file(), "5_trend_analysis", "RData_files", paste0(Sys.Date(), "_All_GL1.RData")))
+
+```
+
+## Prepare Files - part 2
+
+This section defines a function to filter, process, create, and save groundwater level (GL) data based on defined monitoring periods. It then generates datasets for various period lengths for further trend analysis.
+
+#### Key Functions:
+
+-   Data Filtering and Processing:
+
+-   Computes the end year and period label based on the specified start year and period length.
+
+-   Filters the main GL dataset (All_GL) to include records between July 1 of the start year and June 30 of the end year.
+
+-   Groups data by well and calculates monitoring metrics such as start and end dates, actual monitoring duration, maximum possible monitoring duration (in years), and coverage ratio.
+
+-   Applies quality filters to retain only wells with at least 80% coverage and sufficient monitoring duration.
+
+-   Further filters the data to include only records from August, and adds the period label.
+
+-   Data Saving:
+
+-   Dynamically assigns the processed dataset to a global variable with a name based on the period label (e.g. GL1984_2024).
+
+-   Constructs a file path using a root directory and ensures the designated folder exists.
+
+-   Saves the dataset as an RData file with a date-stamped filename.
+
+-   Multi-Period Data Generation:
+
+-   Iterates over various period lengths (10, 20, 30, 40 years) and start years, ensuring that the period does not exceed the year 2024.
+
+-   Calls the processing function for each valid period to create multiple datasets for subsequent trend analysis.
+
+#### Key Data Components:
+
+-   All_GL: The main filtered groundwater level dataset containing high-coverage wells.
+
+-   GL_data: The processed subset for a specific monitoring period based on the start year and period length.
+
+-   GL\<period_label\>: Dynamically created global variables that store the processed GL data for each period.
+
+#### Process Overview:
+
+1.  Prepare and process GL data:
+
+-   Compute the end year and create a period label from the input start year and period length.
+
+-   Filter All_GL for records within the defined monitoring period (July 1 to June 30).
+
+-   Group by well and calculate monitoring metrics (start_date, end_date, actualmonitoring, maxmonitoring, coverage).
+
+-   Filter the data to include only wells with ≥80% coverage and adequate monitoring duration, then restrict to August data.
+
+-   Tag the dataset with the period label.
+
+2.  Save the processed dataset:
+
+-   Assign the processed dataset to a global variable with a period-specific name.
+
+-   Ensure the RData_files directory exists within the trend analysis folder.
+
+-   Save the dataset as an RData file with a date-stamped filename.
+
+3.  Generate datasets for different monitoring periods:
+
+-   Loop through predefined period lengths (10, 20, 30, 40 years) and valid start years.
+
+-   Call the processing function for each valid combination to create multiple datasets.
+
+#### Output:
+
+-   Filtered Groundwater Level Datasets (e.g. GL1984_2024):
+
+-   Contains data only for wells with sufficient coverage, ensuring high-quality input for trend analysis.
+
+-   These datasets are saved as RData files in the specified folder for consistent and reproducible further analysis.
+
+This structured approach to preparing GL data ensures robust filtering by data coverage and monitoring period, thereby enhancing the reliability of subsequent trend analyses and supporting long-term groundwater management and sustainability planning.
+
+```{r, include=FALSE, cache=FALSE}
+
+# Function to filter, process, create, and save GL data
+save_GL_data <- function(start_year, period_length) {
+  # Compute the end year and create a period label
+  end_year <- start_year + period_length
+  period_label <- paste0(start_year, "_", end_year)
+  
+  GL_data <- All_GL %>%
+    filter(datetime >= paste0(start_year, "-07-01") & datetime <= paste0(end_year, "-06-30")) %>%
+    group_by(well) %>%
+    mutate(
+      end_date = max(datetime), 
+      start_date = min(datetime),
+      actualmonitoring = round((n() - 1) / 12, 2),
+      maxmonitoring = round(as.numeric(difftime(end_date, start_date, units = "days")) / 365, 2),
+      coverage = actualmonitoring / maxmonitoring
+    ) %>%
+    filter(coverage >= 0.8 & (ifelse(period_length == 40, maxmonitoring >= 24, maxmonitoring >= (period_length * 0.8)))) %>%
+    filter(month == "August") %>%
+    mutate(period = period_label)
+  
+  # Assign the data frame to the global environment with a name like GL1984_2024
+  assign(paste0("GL", period_label), GL_data, envir = .GlobalEnv)
+  
+  # Build the file path
+  save_dir <- file.path(rprojroot::find_rstudio_root_file(), "5_trend_analysis", "RData_files")
+  
+  # Create the directory if it doesn't exist
+  if (!dir.exists(save_dir)) {
+    dir.create(save_dir, recursive = TRUE)
+  }
+  
+  file_name <- paste0(Sys.Date(), "_GL", period_label, ".RData")
+  file_path <- file.path(save_dir, file_name)
+  
+  # Save the dataframe to file
+  save(list = paste0("GL", period_label), file = file_path)
+}
+
+# Generate datasets for different period lengths (10, 20, 30, 40 years)
+period_lengths <- c(10, 20, 30, 40)
+start_years <- seq(1984, 2024 - min(period_lengths), by = 10)  # Ensures periods don't exceed 2024
+
+# Loop through each period length and start year, and call the function where appropriate
+for (period in period_lengths) {
+  for (start in start_years) {
+    if (start + period <= 2024) {
+      save_GL_data(start, period)
+    }
+  }
+}
+
+```
+
+## Mann-Kendall Analysis - seasonal variations
+
+Here we use the EnvStats package to assess the presence of monotonic trends for each well_month combination for each period using the Mann-Kendall method. Results are then combined into a master data frame. Results are exported as a csv file and shapefile
+
+```{r cache=FALSE, include=FALSE}
+# Function to run Kendall tests for Seasonal Variation (SV)
+# Function to run Kendall tests for Seasonal Variation (SV) using only max_min_diff
+run_kendall_SV <- function(data) {
+  # Remove unused factor levels to ensure only wells with data are retained
+  data <- droplevels(data)
+  
+  results <- data %>%
+    split(.$well) %>%  # Split data by well
+    map(~ {
+      # Check that there are at least 3 non-missing observations
+      if(sum(!is.na(.$max_min_diff)) >= 3) {
+        test_result <- tryCatch(
+          kendallTrendTest(.$max_min_diff ~ .$datetime, alternative = "two.sided"),
+          error = function(e) NULL
+        )
+        if(!is.null(test_result)) {
+          return(data.frame(
+            tau_maxmin       = test_result$estimate["tau"],
+            p_value_maxmin   = test_result$p.value,
+            # Multiply Sen's slope by 365.25 to convert from m/day to m/year (if datetime is a Date)
+            sen_slope_maxmin = test_result$estimate["slope"] * 365.25,
+            intercept_maxmin = test_result$estimate["intercept"],
+            z_stat_maxmin    = test_result$statistic["z"],
+            ci_lower_maxmin  = test_result$interval$limits[1],
+            ci_upper_maxmin  = test_result$interval$limits[2],
+            n                = test_result$sample.size
+          ))
+        }
+      }
+      # Return NA values if there are insufficient data or an error occurs
+      return(data.frame(
+        tau_maxmin       = NA,
+        p_value_maxmin   = NA,
+        sen_slope_maxmin = NA,
+        intercept_maxmin = NA,
+        z_stat_maxmin    = NA,
+        ci_lower_maxmin  = NA,
+        ci_upper_maxmin  = NA,
+        n                = NA
+      ))
+    }) %>%
+    map_dfr(~., .id = "well")  # The .id will capture the well name
+  
+  # Add significance and trend direction columns
+  results <- results %>%
+    mutate(
+      significance_maxmin = ifelse(!is.na(p_value_maxmin) & p_value_maxmin >= 0.05, "non-sig", "sig"),
+      direction_maxmin = ifelse(!is.na(tau_maxmin) & tau_maxmin > 0, "positive",
+                                ifelse(!is.na(tau_maxmin) & tau_maxmin < 0, "negative", "no trend"))
+    )
+  
+  return(results)
+}
+
+
+# Run Kendall trend tests for Seasonal Variation (SV) for all periods
+MK_all_SV         <- run_kendall_SV(All_GL1)
+MK_SV_1984_1994   <- run_kendall_SV(GL1984_1994)
+MK_SV_1994_2004   <- run_kendall_SV(GL1994_2004)
+MK_SV_2004_2014   <- run_kendall_SV(GL2004_2014)
+MK_SV_2014_2024   <- run_kendall_SV(GL2014_2024)
+MK_SV_1984_2004   <- run_kendall_SV(GL1984_2004)
+MK_SV_1994_2014   <- run_kendall_SV(GL1994_2014)
+MK_SV_2004_2024   <- run_kendall_SV(GL2004_2024)
+MK_SV_1994_2024   <- run_kendall_SV(GL1994_2024)
+MK_SV_1984_2014   <- run_kendall_SV(GL1984_2014)
+MK_SV_1984_2024   <- run_kendall_SV(GL1984_2024)
+
+#Combine results
+#10year
+MK_SV_1984_1994$period="1984_1994"
+MK_SV_1994_2004$period="1994_2004"
+MK_SV_2004_2014$period="2004_2014"
+MK_SV_2014_2024$period="2014_2024"
+#20year
+MK_SV_1984_2004$period="1984_2004"
+MK_SV_1994_2014$period="1994_2014"
+MK_SV_2004_2024$period="2004_2024"
+#30year
+MK_SV_1984_2014$period="1984_2014"
+MK_SV_1994_2024$period="1994_2024"
+#40year
+MK_SV_1984_2024$period="1984_2024"
+#full
+MK_all_SV$period="Full"
+
+
+MK_SV_combined <- rbind(
+#10yr
+  MK_SV_1984_1994,
+  MK_SV_1994_2004,
+  MK_SV_2004_2014,
+  MK_SV_2014_2024,
+#20yr
+  MK_SV_1984_2004,
+  MK_SV_1994_2014,
+  MK_SV_2004_2024,
+#30yr
+  MK_SV_1984_2014,
+  MK_SV_1994_2024,
+#40yr
+  MK_SV_1984_2024,
+#All  
+  MK_all_SV
+  ) %>% 
+ left_join(WellStor_sf_NZTM, by = "well") %>% 
+  st_as_sf()
+  
+selection <- MK_SV_combined %>% 
+  sf::st_intersection(allbasins) %>% 
+  sf::st_drop_geometry() 
+
+MK_SV_combined_1 <- MK_SV_combined %>% 
+  dplyr::left_join(., selection) %>% 
+  sf::st_as_sf(coords = c("Easting", "Northing"), crs = 2193, agr = "constant", remove = FALSE) %>% 
+  # If you need geometry, keep the sf conversion; if not, remove st_drop_geometry() or skip the sf conversion entirely
+  sf::st_drop_geometry() %>% 
+  dplyr::rename(area = NAME) %>% 
+  mutate(period = factor(period, levels = c(
+    "Full",
+    "1984_1994",
+    "1994_2004",
+    "2004_2014",
+    "2014_2024",
+    "1984_2004",
+    "1994_2014",
+    "2004_2024",
+    "1984_2014",
+    "1994_2024",
+    "1984_2024"
+  ))) %>% 
+  mutate(area = factor(area, levels = c("Heretaunga Plains", "Ruataniwha Plains", "Minor aquifers"))) %>% 
+  mutate(sig_1 = case_when(
+    significance_maxmin == "non-sig" ~ "non-sig",
+    direction_maxmin == "positive" ~ "positive",
+    direction_maxmin == "negative" ~ "negative",
+    TRUE ~ "check"
+  )) %>% 
+  mutate(sig_1 = factor(sig_1, levels = c("positive", "negative", "non-sig", "check"))) 
+  
+
+# Create the "Tables" directory inside "3_State_analysis" if it doesn't exist
+dir.create(file.path(rprojroot::find_rstudio_root_file(), "5_Trend_analysis", "Results_tables"), 
+           recursive = TRUE, showWarnings = FALSE)
+
+# Export the Mann-Kendall results to CSV in the newly created folder
+write.table(MK_SV_combined_1, 
+            file = file.path(rprojroot::find_rstudio_root_file(), "5_Trend_analysis", "Results_tables", 
+                             paste0(Sys.Date(), "_SV_Mann_Kendall_results.csv")), 
+            sep = ",", row.names = FALSE, quote = FALSE)
+
+
+# Define folder path and ensure it exists
+file_path <- file.path(rprojroot::find_rstudio_root_file(),
+                       "5_Trend_analysis", "Results_shapefiles", 
+                       paste0(Sys.Date(), "_MK_SV_combined_sf.shp"))
+
+dir.create(dirname(file_path), recursive = TRUE, showWarnings = FALSE)
+
+
+#Create and write the shapefile
+MK_SV_combined_sf <- MK_SV_combined_1 %>% 
+  left_join(WellStor_sf_NZTM) %>% 
+  st_as_sf() %>% 
+  sf::st_write(file_path, delete_layer = TRUE)
+
+
+  
+```
+
+# Tables
+
+## Mann-Kendall results - option 1
+
+This section compiles three key tables that summarise groundwater monitoring trends across multiple periods and aquifers, providing insights into trend significance, data coverage, and the average rate of change.
+
+#### Key Functions:
+
+-   Trend Summary by Well and Aquifer
+
+-   Groups data by period, aquifer (area), and trend significance (`sig_1`).
+
+-   Counts the number of unique wells exhibiting each trend.
+
+-   Converts the results into a wide-format table for easy comparison across periods.
+
+-   Unique Well Tests Summary:
+
+    -   Counts the number of wells tested for each period and aquifer.
+
+    -   Produces a wide-format table that highlights the data coverage and temporal distribution.
+
+-   Average Rate of Change of Significant Trends:
+
+    -   Filters the dataset to include only statistically significant trends (where `significance_maxmin` equals "sig") with valid Sen's slope values.
+
+    -   Calculates the mean Sen's slope for each period and aquifer, offering an estimate of the average trend magnitude.
+
+    -   Rounds the average values to five decimal places and reshapes the output into a wide-format table.
+
+#### Key Data Components:
+
+-   MK_SV_combined_1: Contains the combined Mann-Kendall (MK) trend test results for groundwater monitoring wells.
+
+-   Trend_summary_by_well_aquifer1: Displays the count of significant and non-significant trends per well, organised by period and aquifer.
+
+-   No_unique_wells_tests: Provides the total number of unique wells tested per period and aquifer, reflecting the data coverage.
+
+-   MK_slope_mean1: Presents the average rate of change (Sen's slope) for significant trends across periods and aquifers.
+
+#### Process Overview:
+
+1.  Compute Trend Counts by Well and Aquifer:
+
+-   Summarises the number of significant versus non-significant trends per well.
+
+-   Groups the data by period, area, and sig_1, then reshapes it into a wide-format table to facilitate cross-period comparisons.
+
+2.  Determine Data Coverage:
+
+-   Counts the unique wells tested within each period and aquifer.
+
+-   Provides an overview of the dataset's temporal and spatial coverage to assess the robustness of the trend analysis.
+
+3.  Calculate the Average Rate of Change:
+
+-   Filters to retain only significant trends with non-missing Sen's slope values.
+
+-   Computes the mean Sen's slope for each period and aquifer, rounding the results to five decimal places.
+
+-   Reshapes the results into a wide-format table for straightforward interpretation of average trend magnitudes.
+
+#### Output:
+
+-   Trend Summary by Well and Aquifer (`Trend_summary_by_well_aquifer1`):
+
+    -   A table displaying the number of significant and non-significant trends per well, organised by period and aquifer.
+
+-   Unique Well Tests Summary (`No_unique_wells_tests`):
+
+-   A table indicating the number of wells tested for each period and aquifer, showcasing the coverage of the monitoring network.
+
+-   Average Sen's Slope for Significant Trends (`MK_slope_mean1`):
+
+-   A table presenting the average rate of change (Sen's slope) for statistically significant trends, enabling a clear assessment of the magnitude of groundwater changes across periods and aquifers.
+
+These tables collectively aid in understanding groundwater trend distributions, seasonal patterns, and aquifer-scale changes, thereby supporting informed regional water management decisions and long-term groundwater sustainability planning.
+
+```{r, include=FALSE, cache=FALSE}
+
+# This table counts the number of significant and insignificant trends by well
+Trend_summary_by_well_aquifer1 <- MK_SV_combined_1 %>% 
+  group_by(period, area, sig_1) %>% 
+  summarise(n = n_distinct(well), .groups = "drop") %>% 
+  pivot_wider(names_from = period, values_from = n, values_fill = list(n = 0))
+
+#This table counts the number of wells tested for each period
+No_unique_wells_tests <- MK_SV_combined_1 %>% 
+  group_by(period, area) %>% 
+  summarise(n = n_distinct(well), .groups = "drop") %>% 
+  pivot_wider(names_from = period, values_from = n, values_fill = list(n = 0))
+
+# This table calculates the average rate of change of significant trends
+MK_slope_mean1 <- MK_SV_combined_1 %>% 
+  filter(significance_maxmin == "sig", !is.na(sen_slope_maxmin)) %>% 
+  group_by(period, area) %>%  
+  summarise(n = round(mean(sen_slope_maxmin, na.rm = FALSE), digits = 5), .groups = "drop") %>%  
+  pivot_wider(names_from = period, values_from = n, values_fill = list(n = NA))
+
+```
+
+Same as above but uses a function to create a list of tables
+
+```{r, include=FALSE, cache=FALSE}
+
+# List of areas to process
+areas_to_process <- c("Heretaunga Plains", "Ruataniwha Plains", "Minor aquifers")
+
+# Initialise a list to store results
+seasonal_area_tables <- list()
+
+for (area_name in areas_to_process) {
+  
+  # Filter and Process Data for the Current Area
+  seasonal_area_data <- MK_SV_combined_1 %>%
+    filter(significance_maxmin == "sig", area == area_name) %>%
+    group_by(period) %>%  # No 'month' since it's not available
+    summarise(
+      mean_annual_slope = round(mean(sen_slope_maxmin, na.rm = TRUE), digits = 2),
+      .groups = 'drop'
+    )
+  
+  # Calculate the Number of Wells Sampled per Period
+  well_counts <- MK_SV_combined_1 %>%
+    filter(significance_maxmin == "sig", area == area_name) %>%
+    group_by(period) %>%
+    summarise(wells = n_distinct(well))
+  
+  # Merge the Well Counts Back into the Area Data
+  seasonal_area_data <- seasonal_area_data %>%
+    left_join(well_counts, by = "period")
+  
+  # Store Processed Data
+  seasonal_area_tables[[area_name]] <- seasonal_area_data
+  
+  # Print message indicating completion
+  message("Seasonal Kendall data processed for area: ", area_name)
+}
+
+```
+
+# Plotting
+
+## Plots for Mann-Kendall - time series plots with trend line
+
+This section automates the creation of groundwater level time-series plots for statistically significant trends using results from the Mann-Kendall (MK) test. The process dynamically organises subdirectories for different time periods and generates individual well-level plots.
+
+#### Key Functions:
+
+-   **Directory Setup:**
+
+    -   Defines and ensures the existence of a `Results_Plots` directory within the "5_Trend_analysis" folder.
+
+    -   Dynamically creates subdirectories for each analysis period (e.g. "1984_1994_GL_plots_SV").
+
+-   **Data Processing:**
+
+    -   Joins groundwater level (GL) data with Mann-Kendall test results.
+
+    -   Filters for statistically significant trends (where `significance_maxmin` equals `"sig"`).
+
+    -   Computes and appends p-values for significance assessment, rounding them for clarity.
+
+-   **Plot Generation:**
+
+    -   Generates facet-wrapped scatter plots displaying groundwater levels over time, enhanced with trend smoothing to highlight long-term variations.
+
+    -   Titles each plot with the well ID and trend period.
+
+    -   Saves each plot as a PNG file in a period-specific folder.
+
+-   **Batch Processing:**
+
+    -   Iterates over multiple time periods (e.g. "1984-1994", "1994-2004", etc.).
+
+    -   For each period, processes the corresponding GL and MK_SV datasets and saves the resulting plots into dynamically created subdirectories.
+
+#### Key Data Components:
+
+-   **GL1984_1994, GL1994_2004, GL2004_2014, GL2014_2024, etc.:**\
+    Groundwater level datasets for various time periods.
+
+-   **MK_SV_1984_1994, MK_SV_1994_2004, MK_SV_2004_2014, MK_SV_2014_2024, etc.:**\
+    Mann-Kendall trend test results for the corresponding periods.
+
+-   **base_dir:**\
+    The root directory where all generated plots are stored.
+
+-   **output_folder:**\
+    Dynamically created subdirectories for each period (e.g. `"1984_1994_GL_plots_SV"`).
+
+#### Process Overview:
+
+1.  **Create Directory Structure:**
+
+    -   The base directory is defined dynamically using `rprojroot::find_rstudio_root_file()`, ensuring portability across projects.
+
+    -   A `Results_Plots` directory is created under the "5_Trend_analysis" folder.
+
+    -   Subdirectories for each analysis period are dynamically generated using the `get_plot_path` function.
+
+2.  **Process and Plot Data for Each Period:**
+
+    -   Groundwater level data is joined with Mann-Kendall test results by well.
+
+    -   Data is filtered to retain only statistically significant trends.
+
+    -   P-values are computed, rounded, and appended to the data for significance assessment.
+
+    -   Well-level plots are generated using ggplot2, showing time-series data with a smooth trend line. The plots are facet-wrapped by well, with appropriate axis labels and titles that include both the well ID and the trend period.
+
+3.  **Save Outputs:**
+
+    -   Each plot is saved as a PNG file in the corresponding period-specific folder, using a structured naming convention (e.g. each file is named after the well ID).
+
+    -   The plots facilitate easy retrieval and interpretation, supporting long-term groundwater monitoring and trend analysis.
+
+#### Output:
+
+-   **Well-level groundwater level plots:**
+
+    -   Stored in `"Results_Plots/<Period>_GL_plots_SV/"` subdirectories.
+
+    -   Visualises time-series data with trend smoothing and annotated p-values.
+
+    -   Provides a clear, period-specific visual interpretation of groundwater trends.
+
+```{r, include=FALSE, cache=FALSE}
+
+# Define base directory dynamically
+base_dir <- file.path(rprojroot::find_rstudio_root_file(), "5_Trend_analysis", "Results_Plots")
+
+# Ensure the base directory exists
+dir.create(base_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Function to create subdirectories dynamically
+get_plot_path <- function(subfolder) {
+  dir_path <- file.path(base_dir, subfolder)
+  dir.create(dir_path, recursive = TRUE, showWarnings = FALSE)
+  return(dir_path)
+}
+
+# Function to process and plot data
+process_and_plot <- function(data, results, period_label, output_dir) {
+  df <- data %>%
+    dplyr::inner_join(results, by = c("well")) %>%
+    dplyr::mutate(pvalue1 = round(p_value_maxmin, 3)) %>%
+    dplyr::mutate(period.x1 = paste0(period.x, " P Value = ", pvalue1)) %>%
+    dplyr::mutate(sig = as.character(significance_maxmin)) %>%
+    dplyr::filter(sig == "sig")
+  
+  plot_per_well <- function(well_ids) {
+    df_well <- df %>%
+      dplyr::filter(well == well_ids)
+    
+    g <- ggplot(df_well, aes(x = datetime, y = max_min_diff)) +
+      geom_point(size = 1) +
+      geom_smooth() +
+      facet_wrap(~well, scales = "free") +
+      ylab("Groundwater levels (m)") +
+      xlab("Date") +
+      ggtitle(paste(well_ids, period_label, sep = " "))
+    
+    # Save the plot in the dynamically created folder
+    file_name <- file.path(output_dir, paste0(well_ids, ".png"))
+    cowplot::save_plot(file_name, g)
+    print(paste0("Saved plot for well ", well_ids, " in ", output_dir))
+  }
+  
+  # Generate plots for each well using the label1 column
+  well_ids <- unique(df$well)
+  for (i in seq_along(well_ids)) {
+    plot_per_well(well_ids[i])
+  }
+}
+
+# Define analysis periods and datasets using the names from the first part of your command
+periods <- list(
+  "1984-1994" = list(GL1984_1994, MK_SV_1984_1994),
+  "1994-2004" = list(GL1994_2004, MK_SV_1994_2004),
+  "2004-2014" = list(GL2004_2014, MK_SV_2004_2014),
+  "2014-2024" = list(GL2014_2024, MK_SV_2014_2024),
+  "1984-2004" = list(GL1984_2004, MK_SV_1984_2004),
+  "1994-2014" = list(GL1994_2014, MK_SV_1994_2014),
+  "2004-2024" = list(GL2004_2024, MK_SV_2004_2024),
+  "1984-2014" = list(GL1984_2014, MK_SV_1984_2014),
+  "1994-2024" = list(GL1994_2024, MK_SV_1994_2024),
+  "1984-2024" = list(GL1984_2024, MK_SV_1984_2024)
+)
+
+# Process and save plots for each period
+for (period in names(periods)) {
+  dataset <- periods[[period]]
+  # Create output folder with a name like "1984_1994_GL_plots_SV"
+  output_folder <- get_plot_path(paste0(gsub("-", "_", period), "_GL_plots_SV"))
+  process_and_plot(dataset[[1]], dataset[[2]], period, output_folder)
+}
+
+```
+
+## Plots for Seasonal-Kendall
+
+```{r data analysis, include=FALSE, cache=FALSE}
+#Graph results
+
+# Define colours for the plot
+SoE_colours <- c("#00b189", "#008ca5", "#f15d49", "#92a134", "#00a651", "#00b1b1", "#eebd1c")
+
+# This bar plot shows the number of trends detected for each period
+MK_SV_summary_plot <- MK_SV_combined_1 %>%
+  filter(significance_maxmin == "sig", sig_1 != "check") %>% 
+  select(area, sig_1, period) %>% 
+  group_by(area, period, sig_1) %>% 
+  summarise(value = n(), .groups = "drop") %>% 
+  mutate(
+    # Recode "positive" to "increasing" and "negative" to "decreasing"
+    sig_1 = recode(sig_1, positive = "increasing", negative = "decreasing"),
+    # Define the factor levels explicitly so both categories are shown
+    sig_1 = factor(sig_1, levels = c("increasing", "decreasing")),
+    period_group = case_when(
+      period %in% c("1984_1994", "1994_2004", "2004_2014", "2014_2024") ~ "10 Year Period",
+      period %in% c("1984_2004", "1994_2014", "2004_2024") ~ "20 Year Period",
+      period %in% c("1984_2014", "1994_2024") ~ "30 Year Period",
+      period == "1984_2024" ~ "40 Year Period",
+      period == "Full" ~ "All periods",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  ggplot(aes(x = sig_1, y = value, fill = sig_1)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  facet_grid(area ~ period_group + period, scales = "free") +
+  scale_x_discrete(drop = FALSE) +  # Ensures that both factor levels appear on each plot
+  scale_fill_manual(values = SoE_colours) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    strip.text = element_text(size = 12),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) + 
+  labs(
+    y = "Number of trends detected",
+    x = "Trend direction",
+    title = "Number of Statistically Significant Trends Detected by period"
+  )
+
+# Define the base directory dynamically using the RStudio project root
+base_dir <- file.path(rprojroot::find_rstudio_root_file(), "5_Trend_analysis", "Results_Plots", "Summary_Plots")
+
+# Ensure the base directory exists
+dir.create(base_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Define file path for saving
+file_path <- file.path(base_dir, "MK_SV_summary_plot.png")
+
+# Save the plot
+ggsave(file_path, MK_SV_summary_plot, dpi = 300)
+
+```
+
+# BoxPlot
+
+```{r, echo=FALSE, include=TRUE, warning=FALSE, fig.height=4, fig.width=10}
+
+MK_SV_slope <-  MK_SV_combined_1 %>%
+ select(well,sig_1, sen_slope_maxmin,period, area)
+
+# Filter for positive and negative trends and rename them
+df_filtered <- MK_SV_slope %>%
+  filter(sig_1 %in% c("positive", "negative")) %>% 
+  mutate(sig_1 = recode(sig_1, positive = "increasing", negative = "decreasing"))
+
+# Create the boxplot, faceted by area
+ggplot(df_filtered, aes(x = sig_1, y = sen_slope_maxmin, fill = period)) +
+  geom_boxplot(color = "black", outlier.shape = NA, outlier.size = 2) +
+  facet_wrap(~ area) +  
+  scale_fill_brewer(palette = "Paired") +
+  labs(
+    title = " ",
+    x = "",
+    y = "Sen's Slope"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.width = unit(2, "cm"),
+    legend.spacing.x = unit(0.5, 'cm'),
+    legend.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 0.5, size = 12),
+    axis.text.y = element_text(size = 12),
+    strip.text = element_text(face = "plain", size = 12),  # 📐 Make facet titles clearer
+    strip.background = element_rect(fill = "lightgrey", color = "black"),  
+    panel.grid.major.y = element_line(color = "gray90"),
+    panel.grid.major.x = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),  # Dark border around entire plot
+    axis.line.y.right = element_line(color = "black", size = 0.5)  # 🔹 Dark right y-axis line
+  ) +
+  guides(fill = guide_legend(nrow = 2))
+
+```
+
+## Mann_kendall maps - 2021-2024
+
+```{r, echo=FALSE, include=TRUE, warning=FALSE, fig.height=4, fig.width=10}
+
+#This plots maps showing seasonal variation ranges
+
+# Plot seasonal variation
+All_GL1_sf <- All_GL1 %>%
+  dplyr::filter(year >2020) %>% 
+  dplyr::select(well, year, max_level,min_level,max_min_diff) %>% 
+  dplyr::left_join(WellStor_sf_NZTM) %>% 
+  sf::st_as_sf()
+  
+
+# Calculate natural breaks (Jenks breaks)
+breaks <- classInt::classIntervals(All_GL1_sf$max_min_diff, n = 5, style = "jenks")$brks
+
+# Set minimum and maximum bubble sizes
+min_size <- 1.8   # Set your desired minimum size
+max_size <- 2  # Set your desired maximum size
+
+tmap::tm_shape(allbasins)+
+  tmap::tm_fill()+
+  tmap::tm_shape(Quaternary_aquifers,)+
+  tmap::tm_fill(col = "Aquifer",
+                palette = "darkseagreen3",
+                border.col = "white", lwd = 2, alpha = 0.5,
+                title = "",
+                labels = "Quaternary sediments")+
+  tmap::tm_shape(bb_box)+  
+  tmap::tm_lines(col = "black", lwd = 1,lty = "solid")+
+  tmap::tm_text("Name", size = 0.8, xmod = 3.3, ymod=0.6)+
+  tmap::tm_shape(All_GL1_sf)+ 
+  tmap::tm_bubbles(size = "max_min_diff",
+             col = "max_min_diff",
+             breaks = breaks,
+             palette = "-RdBu",
+             scale = c(min_size, max_size))+
+  tmap::tm_facets(by='year',free.coords = TRUE)+
+  tmap::tm_legend(title.position =c("left", "bottom"),
+                  title.size=5,
+                  scale=1,
+                  legend.text.size = 1.1)+
+  tmap::tm_layout(legend.outside = T, 
+                  legend.outside.position = "bottom",
+                  legend.text.size = 2)
+
+
+```
+
+## Mann_kendall maps 
+
+This section automates the creation of geospatial trend analysis maps using Mann Kendall (MK) test results. It processes groundwater trend data and overlays results on geospatial boundaries, allowing visual interpretation of significant and non-significant trends.
+
+```{r, include=TRUE, cache=FALSE}
+
+# Define base directory dynamically for saving plots
+save_dir <- file.path(
+  rprojroot::find_rstudio_root_file(), 
+  "5_Trend_analysis", 
+  "Results_Maps_MK"
+)
+
+# Ensure the directory exists
+dir.create(save_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Define a mapping of areas to their respective shapefiles
+area_shapefiles <- list(
+  "Heretaunga Plains" = HP_plains_sf,
+  "Ruataniwha Plains" = RP_plains_sf, 
+  "Minor aquifers"    = Regional_boundary_sf
+)
+
+# Preprocess data: create 'trend_sig', round the slope, and create a label column
+MK_SV_combined_sf <- MK_SV_combined_sf %>%
+  mutate(
+    trend_sig = case_when(
+      significance_maxmin == "sig"     & direction_maxmin == "positive"   ~ "sig_up",
+      significance_maxmin == "sig"     & direction_maxmin == "negative" ~ "sig_down",
+      significance_maxmin == "non-sig" & direction_maxmin == "postive"   ~ "non-sig_up",
+      significance_maxmin == "non-sig" & direction_maxmin == "negative" ~ "non-sig_down",
+      TRUE ~ NA_character_
+    ),
+    Annual_slope_rounded = round(sen_slope_maxmin, 3),  # Round slope to 3 decimals
+    slope_label = if_else(Annual_slope_rounded == 0, "<0.01", as.character(Annual_slope_rounded))
+  ) %>%
+  filter(!is.na(trend_sig))  # Remove rows lacking a valid trend_sig
+
+# Function to create and save facet plots for Seasonal Kendall results
+create_mann_kendall_plots <- function(period, area, df, area_shapefiles, osm_type = "esri-shaded") {
+  
+  # Retrieve the correct shapefile for this area
+  shape_sf <- area_shapefiles[[area]]
+  
+  # Determine if the shapefile is polygon or line (for borders vs. lines)
+  is_polygon <- if (!is.null(shape_sf)) {
+    any(st_geometry_type(shape_sf) %in% c("POLYGON", "MULTIPOLYGON"))
+  } else {
+    FALSE
+  }
+  
+  # If shapefile is available, read a basemap from OSM
+  base_map <- if (!is.null(shape_sf)) {
+    read_osm(shape_sf, type = osm_type, ext = 1.1)
+  } else {
+    NULL
+  }
+  
+  # Filter the main dataframe by the given period & area
+  df_filtered <- df %>%
+    filter(period == !!period, area == !!area)
+  
+  # If no valid data, skip
+  if (nrow(df_filtered) == 0) {
+    message(paste("⚠ No valid SK data for", area, "in period:", period, "- Skipping."))
+    return(NULL)
+  }
+  
+  # Use static (plot) mode
+  tmap_mode("plot")
+  
+  # Build the initial map
+  plot <- if (!is.null(base_map)) {
+    # Show base map plus the boundary shapefile
+    qtm(base_map) + 
+      tm_shape(shape_sf) + 
+      if (is_polygon) tm_borders() else tm_lines()
+  } else {
+    # No base map for some areas
+    tm_shape(df_filtered)
+  }
+  
+  # Add point symbols, text labels, plus the main title & legends
+  plot <- plot +
+    tm_shape(df_filtered) +
+    tm_symbols(
+      shape = "trend_sig",
+      shapes = c("sig_up" = 24, "sig_down" = 25, 
+                 "non-sig_up" = 24, "non-sig_down" = 25),
+      col = "trend_sig",
+      palette = c("sig_up" = "blue", "sig_down" = "red",
+                  "non-sig_up" = "black", "non-sig_down" = "black"),
+      size = 1,
+      legend.shape.show = FALSE,  # Hide auto shape legend
+      legend.col.show   = FALSE   # Hide auto colour legend
+    ) +
+    tm_text(
+      text = "slope_label",  # Use the new slope_label column
+      size = 0.7,
+      col  = "black",
+      just = "left",
+      xmod = 0.5,
+      ymod = 0.5
+    ) +
+    tm_layout(
+      panel.label.size   = 2,
+      panel.label.height = 1.5,
+      legend.show        = TRUE,
+      main.title         = paste("Mann Kendall Trends for", area, 
+                                 "\n(", period, ")"),  # line break
+      main.title.position= "center",  
+      main.title.size    = 1.5,
+      outer.margins      = c(0.1, 0.02, 0.02, 0.02)  # extra top margin for title
+    ) +
+    # 1st legend for shapes
+    tm_add_legend(
+      type       = "symbol",
+      title      = " ",
+      labels     = c("Significant Up", "Significant Down", 
+                     "Non-significant Up", "Non-significant Down"),
+      shape      = c(24, 25, 24, 25),
+      col        = c("blue", "red", "black", "black"),
+      border.col = "black",
+      is.portrait= FALSE  # horizontal
+    ) +
+    tm_add_legend(
+      type       = "symbol",
+      title      = " ",
+      labels     = c("Sen's slope (m/yr) in black text"),
+      shape      = c(24),
+      col        = "black",
+      border.col = "black",
+      is.portrait= TRUE  # horizontal
+    ) +
+    tm_layout(
+      legend.outside          = TRUE,
+      legend.outside.position = "bottom",
+      legend.position         = c("center", "top"),
+      legend.stack            = "vertical",
+      legend.bg.col           = "white"
+    )
+  
+  # Short name for saving
+  area_short <- case_when(
+    area == "Heretaunga Plains" ~ "HP",
+    area == "Ruataniwha Plains" ~ "RP",
+    area == "Minor aquifers"    ~ "MA",
+    TRUE ~ gsub(" ", "_", area)
+  )
+  
+  # Output file path
+  filename <- file.path(save_dir, paste0(area_short, "_MK_", period, ".png"))
+  
+  # Save the plot
+  tmap_save(plot, filename, width = 16, height = 10, units = "in", dpi = 100)
+  
+  # Use Magick to remove white spaces by trimming the image
+  img <- image_read(filename)
+  img <- image_trim(img)
+  image_write(img, path = filename, format = "png")
+  
+  message(paste("✅ SK Plot saved at:", filename))
+}
+
+# Define your periods and areas
+periods <- c(
+  "1984_1994", "1994_2004", "2004_2014", "2014_2024", 
+  "1984_2004", "1994_2014", "2004_2024", "1984_2014", 
+  "1994_2024", "1984_2024"
+)
+
+areas <- c("Heretaunga Plains", "Ruataniwha Plains", "Minor aquifers")
+
+# Loop through each period and area to generate facet plots
+for (period in periods) {
+  for (area in areas) {
+    create_mann_kendall_plots(period, area, df = MK_SV_combined_sf, area_shapefiles)
+  }
+}
+
+
+```

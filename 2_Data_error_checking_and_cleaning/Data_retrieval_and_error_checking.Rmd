@@ -1,0 +1,186 @@
+---
+title: "Data error checking and cleaning"
+output:
+  html_notebook: 
+    toc: yes
+    toc_depth: 4
+    toc_float: true
+    number_sections: false
+    theme: lumen
+  df_print: paged
+ 
+---
+
+```{=html}
+<style>
+/* Adjust settings for the Table of Contents (TOC) */
+#TOC {
+    margin: 80px 0 20px -180px; /* Slightly reduced margin for better positioning */
+}
+div.tocify {
+    width: 100%; /* Ensures it adapts well to different screen sizes */
+    max-width: 500px;
+    max-height: 100vh; /* Ensures TOC never exceeds the viewport height */
+    overflow-y: auto; /* Adds scroll if content exceeds max-height */
+}
+
+/* Style for the title */
+h1.title {
+    color: #66b2b2;
+    font-weight: bold;
+    font-size: 42px;
+    text-align: center; /* Centers the title */
+    margin-bottom: 20px; /* Adds spacing below the title */
+}
+
+/* Body styles */
+body {
+    text-align: justify;
+    font-size: 16pt;
+    line-height: 1.6; /* Improves readability with better line spacing */
+}
+
+/* Main container styles */
+div.main-container {
+    max-width: 1280px; /* Reduced slightly for better content width balance */
+    margin: 0 auto; /* Centers the container */
+    padding: 20px; /* Adds internal spacing */
+    box-sizing: border-box; /* Ensures padding doesn’t affect max-width */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #TOC {
+        margin: 50px 0 10px -100px; /* Adjusts TOC margin for smaller screens */
+    }
+    div.tocify {
+        width: 100%;
+        max-width: 100%;
+    }
+    h1.title {
+        font-size: 36px; /* Reduces title size for smaller screens */
+    }
+    body {
+        font-size: 14pt; /* Slightly reduces text size for better mobile viewing */
+    }
+    div.main-container {
+        max-width: 95%; /* Allows more flexibility on smaller screens */
+        padding: 10px;
+    }
+}
+</style>
+```
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(here)
+library(lubridate)
+```
+
+################################################################################################################################################################################################
+
+## Load data
+
+```{r , include=FALSE, cache=FALSE}
+# Set the directory where the file is saved
+# Set the relative directory (assuming the script runs from the project root)
+target_dir <- file.path(rprojroot::find_rstudio_root_file(), "2_Data_error_checking_and_cleaning")
+
+
+# Define the pattern to match the files with the desired prefix
+pattern <- "^\\d{4}-\\d{2}-\\d{2}_data_set_unclean\\.RData$"
+
+
+# List files in the directory that match the pattern# List files in the directory that match the pattern
+files <- list.files(path = target_dir, pattern = pattern, full.names = TRUE)
+
+# Check if there are matching files
+if (length(files) > 0) {
+  # Load the most recent file (if there are multiple, pick the first one)
+  load(files[1])
+  message("Loaded file: ", files[1])
+} else {
+  stop("No matching files found.")
+}
+
+data_set_unclean1 <- data_set_unclean %>% 
+  dplyr::mutate(datetime=as_date(my_month),
+                          GL=round(av_gl, digits = 2),
+                            well = as.factor(well)) 
+     
+rm(data_set_unclean)
+any(is.na(data_set_unclean1))
+```
+
+## Check for duplicate water levels
+
+```{r, include=FALSE, cache=FALSE}
+#duplicate water level
+test_data <- data_set_unclean1 %>% 
+  ungroup() %>% 
+  filter(datetime == "1982-03-01") %>% 
+  filter(well == 25) %>% 
+  rbind(data_set_unclean1)
+
+#First check that it works
+test_check <- unique(test_data[duplicated(test_data)|duplicated(test_data, fromLast=TRUE),])
+
+#Actual check
+check_duplicates <- unique(data_set_unclean1[duplicated(data_set_unclean1)|duplicated(data_set_unclean1, fromLast=TRUE),])
+
+```
+
+
+## Check plots
+
+```{r Load, include=FALSE, cache=FALSE}
+# first create df copy of data set to be used
+
+df <- data_set_unclean1 
+
+plot_per_well <- function(well_ids){
+
+df_well <- df %>% 
+    dplyr::filter(well == well_ids) #Use the name "hello" - but any name will work   
+  
+g <- ggplot(df_well, aes(x = datetime, y = GL)) +
+  geom_point(size = 0.5)+
+  facet_wrap(~well, scales = "free")+
+  ylab("Groundwater levels (m)")+
+  xlab("Date")+
+  ggtitle(paste0("Well ", well_ids, sep=""))
+  
+save_plot(paste0("2_Data_error_checking_and_cleaning/plots_checks/", well_ids, ".png" , sep =""), g)
+#save_plot(paste0(well_ids, ".png" , sep =""), g)
+print(paste0("generating plot for well " , well_ids))
+
+}
+
+well_id <- unique(df$well)
+no_well <- length(unique(df$well))
+
+for(www in 1:no_well){ # 1:no_well is telling the loop how many times to perform the loop
+  plot_per_well(well_id[www])
+}
+#plot_per_well(113)
+
+```
+
+```{r, include=FALSE, cache=FALSE}
+# wells to exclude based on visual inspection of graphs
+#M Here we are looking for wells with serious errors - those with short records and gaps will be kept in this step.
+
+`%notin%` <- Negate(`%in%`)
+
+data_set_clean <- data_set_unclean1 %>% 
+  filter(well %notin% c(1026,4696, 5331, 15227, 16488))
+           
+save(data_set_clean, file = file.path(target_dir, paste0(Sys.Date(), "_data_set_clean.RData")))   
+
+```
