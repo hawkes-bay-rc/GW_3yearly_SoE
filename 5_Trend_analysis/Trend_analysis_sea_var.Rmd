@@ -73,9 +73,6 @@ div.main-container {
 ## Load Packages
 
 ```{r setup, include=FALSE}
-# knitr::opts_chunk$set(echo = TRUE)
-# knitr::opts_knit$set(root.dir = "M:/E_Science/Projects/330 GW Quantity/330 SOE reporting/SOE 5 yearly technical report/2020-2023/R_script")
-
 library(RODBC)
 library(sf)
 library(dplyr)
@@ -85,19 +82,6 @@ library(tidyr)
 library(ggplot2)
 library(cowplot)
 library(rprojroot)
-
-
-# library(lubridate)
-# library(tidyverse)
-
-
-
-# library(here)
-# library(kableExtra)
-# library(reactable)
-
-# library(readr)
-# library(grid)
 
 ```
 
@@ -753,8 +737,6 @@ MK_SV_combined_sf <- MK_SV_combined_1 %>%
   st_as_sf() %>% 
   sf::st_write(file_path, delete_layer = TRUE)
 
-
-  
 ```
 
 # Tables

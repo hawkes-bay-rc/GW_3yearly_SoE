@@ -1031,56 +1031,6 @@ Trend_summary_by_months_aquifer <- MK_results_combined_1 %>%
   summarise(n=n()) %>% 
   pivot_wider(names_from = period, values_from = n) 
 
-# #This table counts the number of wells tested for each period
-# No_unique_wells_tests <- MK_results_combined_1 %>% 
-#   group_by(period,area) %>% 
-#   distinct(well) %>% 
-#   summarise(n=dplyr::n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-# 
-# 
-# #This table counts the number of unique well_month combinations tested for each period
-# No_unique_wellmonths_tests <- MK_results_combined_1 %>% 
-#   group_by(period,area) %>% 
-#   summarise(n=dplyr::n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
-
-# This table calculates the average rate of change of significant trends
-# MK_slope_mean <- MK_results_combined_1 %>% 
-#   filter(sig == "sig") %>% 
-#   group_by(period, area, month) %>%  # Removed `Annual_slope` if it's a result of the calculation
-#  summarise(n = round(mean(Annual_slope, na.rm = TRUE), digits = 2)) %>%  # Assuming `Annual_slope` is what you want the mean of
-#   pivot_wider(names_from = period, values_from = n)
-
-##### Other options #######
-
-#Summarise results
-# Trend results by well for FMU
-# Trend_summary_by_well_FMU <- MK_results_combined %>% 
-#   group_by(period,FMU,sig_1) %>% 
-#   distinct(well) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
-# Trend_total_wells_FMU <- MK_results_combined %>% 
-#   group_by(period,FMU) %>% 
-#   distinct(well) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
-# Trend results by months for FMU
-# Trend_summary_by_months_FMU <- MK_results_combined %>% 
-#   group_by(period,FMU,sig_1) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n) 
-# 
-# Trend_total_months_FMU <- MK_results_combined %>% 
-#   group_by(period,area) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
-  
 ```
 
 ## Mann-Kendall results - Option 2
@@ -1288,32 +1238,6 @@ No_unique_wells_tests_1 <- SMK_results_combined_1 %>%
   distinct(well) %>% 
   summarise(n=dplyr::n()) %>% 
   pivot_wider(names_from = period, values_from = n)
-
-#Summarise results
-# Trend results by well for FMU
-# Trend_summary_by_well_FMU <- MK_results_combined %>% 
-#   group_by(period,FMU,sig_1) %>% 
-#   distinct(well) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
-# Trend_total_wells_FMU <- MK_results_combined %>% 
-#   group_by(period,FMU) %>% 
-#   distinct(well) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
-# Trend results by months for FMU
-# Trend_summary_by_months_FMU <- MK_results_combined %>% 
-#   group_by(period,FMU,sig_1) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n) 
-# 
-# Trend_total_months_FMU <- MK_results_combined %>% 
-#   group_by(period,area) %>% 
-#   summarise(n=n()) %>% 
-#   pivot_wider(names_from = period, values_from = n)
-
 
 ```
 
